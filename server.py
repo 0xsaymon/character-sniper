@@ -13,8 +13,9 @@ import shutil
 import tempfile
 import time
 import uuid
+from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Optional
 
 import uvicorn
 from fastapi import FastAPI, Request
@@ -40,12 +41,33 @@ from character_sniper import (
     copy_selected,
     IMAGE_EXTENSIONS,
 )
+from session_store import SessionStore
 
 # ---------------------------------------------------------------------------
 # App setup
 # ---------------------------------------------------------------------------
 
-app = FastAPI(title="Character Sniper")
+# ---------------------------------------------------------------------------
+# Session persistence (SQLite)
+# ---------------------------------------------------------------------------
+
+store = SessionStore()
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
+    """Restore latest completed job from SQLite on startup."""
+    latest = store.load_latest_job()
+    if latest and store.is_job_valid(latest["id"]):
+        _restore_job_from_db(latest)
+    elif latest:
+        print(
+            f"[session] Latest job {latest['id']} is outdated (input changed), skipping"
+        )
+    yield
+
+
+app = FastAPI(title="Character Sniper", lifespan=lifespan)
 templates = Jinja2Templates(directory="templates")
 
 
@@ -88,6 +110,31 @@ def load_models(clip_weight: float) -> tuple[FaceAnalyzer, object]:
 # ---------------------------------------------------------------------------
 
 jobs: dict[str, dict] = {}
+
+
+def _restore_job_from_db(saved: dict) -> None:
+    """Hydrate a saved DB job into the in-memory *jobs* dict."""
+    job_id = saved["id"]
+    jobs[job_id] = {
+        "status": saved["status"],
+        "progress": 100 if saved["status"] == "complete" else 0,
+        "current_file": "",
+        "current_folder": "",
+        "folders_done": 0,
+        "folders_total": 0,
+        "images_done": 0,
+        "images_total": 0,
+        "results": saved["results"],
+        "all_results": [],  # not needed for display — only for export
+        "original_path": saved["original_path"],
+        "input_path": saved["input_path"],
+        "params": saved["params"],
+        "error": saved.get("error"),
+        "is_recursive": saved.get("is_recursive", False),
+        "start_time": time.time() - (saved.get("elapsed") or 0),
+        "end_time": time.time() if saved["status"] == "complete" else None,
+    }
+    print(f"[session] Restored job {job_id} from database")
 
 
 def new_job(original_path: str, input_path: str, params: dict) -> str:
@@ -198,6 +245,9 @@ async def run_job(job_id: str):
         job["status"] = "complete"
         job["end_time"] = time.time()
 
+        # Persist to SQLite
+        store.save_job(job_id, job)
+
     except Exception as e:
         import traceback
 
@@ -217,7 +267,60 @@ async def index(request: Request):
 
 
 # ---------------------------------------------------------------------------
-# Routes — API
+# Routes — API: Session persistence
+# ---------------------------------------------------------------------------
+
+
+@app.get("/api/settings")
+async def get_settings():
+    """Return saved user settings (or defaults)."""
+    return JSONResponse(store.load_settings())
+
+
+@app.post("/api/settings")
+async def save_settings(request: Request):
+    """Save user settings (called from frontend on form changes)."""
+    data = await request.json()
+    store.save_settings(
+        {
+            "original_path": str(data.get("original_path", "data/original.png")),
+            "input_path": str(data.get("input_path", "data/output")),
+            "top_k": int(data.get("top_k", 5)),
+            "face_weight": float(data.get("face_weight", 0.7)),
+            "clip_weight": float(data.get("clip_weight", 0.3)),
+            "min_face_score": float(data.get("min_face_score", 0.5)),
+        }
+    )
+    return JSONResponse({"ok": True})
+
+
+@app.get("/api/jobs/latest")
+async def latest_job():
+    """Return the latest completed job info for session restore."""
+    latest = store.load_latest_job()
+    if not latest:
+        return JSONResponse({"job_id": None})
+
+    job_id = latest["id"]
+    valid = store.is_job_valid(job_id)
+
+    # Ensure the job is loaded in memory (might have been evicted)
+    if valid and job_id not in jobs:
+        _restore_job_from_db(latest)
+
+    return JSONResponse(
+        {
+            "job_id": job_id if valid else None,
+            "valid": valid,
+            "settings": latest["params"],
+            "original_path": latest["original_path"],
+            "input_path": latest["input_path"],
+        }
+    )
+
+
+# ---------------------------------------------------------------------------
+# Routes — API: Jobs
 # ---------------------------------------------------------------------------
 
 
@@ -233,6 +336,18 @@ async def start_job(request: Request):
 
     # Normalise weights
     face_w, clip_w = normalise_weights("combined", face_weight, clip_weight)
+
+    # Persist settings for next session
+    store.save_settings(
+        {
+            "original_path": original_path,
+            "input_path": input_path,
+            "top_k": top_k,
+            "face_weight": face_weight,
+            "clip_weight": clip_weight,
+            "min_face_score": min_face_score,
+        }
+    )
 
     # Validate paths
     if not Path(original_path).exists():
@@ -305,7 +420,7 @@ async def job_progress(job_id: str, request: Request):
             images_total = job["images_total"]
 
             if status == "loading_models":
-                html = f"""
+                html = """
                 <div class="flex items-center gap-3 mb-2">
                     <div class="animate-spin h-5 w-5 border-2 border-indigo-400 border-t-transparent rounded-full"></div>
                     <span class="text-gray-300">Loading ML models (this takes ~7s on first run)...</span>
@@ -346,7 +461,7 @@ async def job_progress(job_id: str, request: Request):
                 complete_html = f'<div hx-get="/api/jobs/{job_id}/results" hx-trigger="load" hx-target="#results-section" hx-swap="innerHTML"></div>'
                 yield f"event: complete\ndata: {_sse_encode(complete_html)}\n\n"
                 # Send done event to close SSE connection cleanly
-                yield f"event: done\ndata: close\n\n"
+                yield "event: done\ndata: close\n\n"
                 break
             elif status == "error":
                 html = f"""
@@ -359,7 +474,7 @@ async def job_progress(job_id: str, request: Request):
                 """
                 yield f"event: progress\ndata: {_sse_encode(html)}\n\n"
                 yield f"event: complete\ndata: {_sse_encode(html)}\n\n"
-                yield f"event: done\ndata: close\n\n"
+                yield "event: done\ndata: close\n\n"
                 break
             else:
                 html = """
@@ -392,6 +507,12 @@ def _sse_encode(html: str) -> str:
 
 @app.get("/api/jobs/{job_id}/results", response_class=HTMLResponse)
 async def job_results(job_id: str, request: Request):
+    # Try loading from DB if not in memory
+    if job_id not in jobs:
+        saved = store.load_job(job_id)
+        if saved:
+            _restore_job_from_db(saved)
+
     if job_id not in jobs:
         return HTMLResponse("<div class='text-red-400'>Job not found</div>", 404)
 
@@ -433,7 +554,7 @@ async def job_results(job_id: str, request: Request):
 
 @app.post("/api/jobs/{job_id}/toggle/{folder}/{filename}", response_class=HTMLResponse)
 async def toggle_image(job_id: str, folder: str, filename: str, request: Request):
-    if job_id not in jobs:
+    if not _ensure_job_in_memory(job_id):
         return HTMLResponse("Job not found", 404)
 
     # Convert URL folder back to internal name
@@ -449,6 +570,8 @@ async def toggle_image(job_id: str, folder: str, filename: str, request: Request
             for r in job.get("all_results", []):
                 if r.path.name == filename and r.folder == internal_folder:
                     r.selected = img["selected"]
+            # Persist selection change to SQLite
+            store.update_selection(job_id, internal_folder, filename, img["selected"])
             return _render_image_card(job_id, internal_folder, img)
 
     return HTMLResponse("Image not found", 404)
@@ -580,7 +703,7 @@ async def _do_export(job: dict) -> tuple[int, Path]:
 
 @app.post("/api/jobs/{job_id}/export", response_class=HTMLResponse)
 async def export_job(job_id: str):
-    if job_id not in jobs:
+    if not _ensure_job_in_memory(job_id):
         return HTMLResponse("Job not found", 404)
 
     job = jobs[job_id]
@@ -609,7 +732,7 @@ async def export_job(job_id: str):
 @app.post("/api/jobs/{job_id}/export-download")
 async def export_download_job(job_id: str):
     """Export selected images, then zip results/ and return as a downloadable archive."""
-    if job_id not in jobs:
+    if not _ensure_job_in_memory(job_id):
         return JSONResponse({"error": "Job not found"}, 404)
 
     job = jobs[job_id]
@@ -676,9 +799,20 @@ async def browse_path(path: str = "."):
 # ---------------------------------------------------------------------------
 
 
+def _ensure_job_in_memory(job_id: str) -> bool:
+    """Load job from DB into memory if needed. Return True if available."""
+    if job_id in jobs:
+        return True
+    saved = store.load_job(job_id)
+    if saved:
+        _restore_job_from_db(saved)
+        return True
+    return False
+
+
 @app.get("/images/{job_id}/original")
 async def serve_original(job_id: str):
-    if job_id not in jobs:
+    if not _ensure_job_in_memory(job_id):
         return JSONResponse({"error": "Job not found"}, 404)
     path = Path(jobs[job_id]["original_path"])
     if not path.exists():
@@ -689,7 +823,7 @@ async def serve_original(job_id: str):
 @app.get("/images/{job_id}/_flat/{filename}")
 async def serve_image_flat(job_id: str, filename: str):
     """Serve images from flat (non-recursive) input folders."""
-    if job_id not in jobs:
+    if not _ensure_job_in_memory(job_id):
         return JSONResponse({"error": "Job not found"}, 404)
     file_path = Path(jobs[job_id]["input_path"]) / filename
     if not file_path.exists():
@@ -699,7 +833,7 @@ async def serve_image_flat(job_id: str, filename: str):
 
 @app.get("/images/{job_id}/{folder}/{filename}")
 async def serve_image(job_id: str, folder: str, filename: str):
-    if job_id not in jobs:
+    if not _ensure_job_in_memory(job_id):
         return JSONResponse({"error": "Job not found"}, 404)
 
     job = jobs[job_id]

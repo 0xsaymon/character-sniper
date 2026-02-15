@@ -328,6 +328,9 @@ function app() {
         processingStarted: false,
         settingsOpen: false,
 
+        // Session restore
+        restoredJobId: null,
+
         // Filter state
         activeFilter: 'all',  // 'all' | 'selected' | 'scored' | 'rejected'
 
@@ -347,6 +350,52 @@ function app() {
         // All images list for arrow-key navigation in compare mode
         // Populated from DOM after results load
         allImages: [],  // [{src, filename, face_score, clip_score, final_score, cardId}, ...]
+
+        // ── Session restore on page load ─────────────────────────
+        init() {
+            // 1. Restore saved settings
+            fetch('/api/settings')
+                .then(r => r.json())
+                .then(s => {
+                    this.originalPath = s.original_path || this.originalPath;
+                    this.inputPath = s.input_path || this.inputPath;
+                    this.topK = s.top_k || this.topK;
+                    this.faceWeight = s.face_weight ?? this.faceWeight;
+                    this.clipWeight = s.clip_weight ?? this.clipWeight;
+                    this.minFaceScore = s.min_face_score ?? this.minFaceScore;
+                })
+                .catch(() => {});
+
+            // 2. Check for a valid previous job — auto-restore results
+            fetch('/api/jobs/latest')
+                .then(r => r.json())
+                .then(data => {
+                    if (data.job_id) {
+                        this.restoredJobId = data.job_id;
+                        // Restore settings from the job that produced these results
+                        if (data.original_path) this.originalPath = data.original_path;
+                        if (data.input_path) this.inputPath = data.input_path;
+                        if (data.settings) {
+                            this.topK = data.settings.top_k || this.topK;
+                            this.faceWeight = data.settings.face_weight ?? this.faceWeight;
+                            this.clipWeight = data.settings.clip_weight ?? this.clipWeight;
+                            this.minFaceScore = data.settings.min_face_score ?? this.minFaceScore;
+                        }
+                        // Inject a hidden job-id input and load results via HTMX
+                        let ps = document.getElementById('progress-section');
+                        if (ps) {
+                            ps.innerHTML = '<input type="hidden" id="current-job-id" value="' + data.job_id + '" />';
+                        }
+                        this.processingStarted = true;
+                        // Load results into the results section
+                        htmx.ajax('GET', '/api/jobs/' + data.job_id + '/results', {
+                            target: '#results-section',
+                            swap: 'innerHTML'
+                        });
+                    }
+                })
+                .catch(() => {});
+        },
 
         openCompare(detail) {
             this.comparing = true;
