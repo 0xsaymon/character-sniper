@@ -1,5 +1,7 @@
 # Character Sniper
 
+![Tests](https://img.shields.io/badge/tests-123%20passed-brightgreen) ![Coverage](https://img.shields.io/badge/coverage-84%25-green)
+
 Automatically select AI-generated images that are most similar to an original reference photo. Built for workflows where you generate many variations from a single reference (e.g. for LoRA training datasets) and need to pick the best ones without manually reviewing thousands of images.
 
 Available as a **CLI** for batch processing and a **Web UI** with real-time progress, filterable gallery, and side-by-side comparison.
