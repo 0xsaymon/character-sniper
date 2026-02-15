@@ -13,6 +13,10 @@ venv/
 data/
 results/
 
+# Temp / debug artifacts
+screenshot-*.png
+snapshot*.txt
+
 # OS
 .DS_Store
 Thumbs.db

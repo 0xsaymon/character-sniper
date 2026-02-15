@@ -1,0 +1,544 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="h-full flex flex-col overflow-hidden" x-data="app()" @compare-image.window="openCompare($event.detail)" @set-filter.window="setFilter($event.detail)">
+
+    <!-- Top bar -->
+    <header class="bg-gray-800 border-b border-gray-700 px-6 py-3 flex items-center justify-between shrink-0">
+        <div class="flex items-center gap-3">
+            <svg class="w-7 h-7 text-indigo-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                      d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                      d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+            </svg>
+            <h1 class="text-xl font-bold text-white">Character Sniper</h1>
+        </div>
+        <div class="flex items-center gap-3">
+            <!-- Settings button — only when results are shown -->
+            <button x-show="hasResults" @click="settingsOpen = true"
+                    class="px-3 py-1.5 rounded-lg text-sm font-medium text-gray-400 hover:text-white
+                           hover:bg-gray-700 transition-colors flex items-center gap-2">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                          d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                </svg>
+                Settings
+            </button>
+            <span x-show="!hasResults" class="text-xs text-gray-500">Face + CLIP similarity scoring</span>
+        </div>
+    </header>
+
+    <!-- Main content -->
+    <div class="flex-1 flex flex-col overflow-hidden">
+
+        <!-- Settings panel (initial — before first processing) -->
+        <div class="bg-gray-800/50 border-b border-gray-700 p-6" x-show="!processingStarted" x-transition>
+            <form hx-post="/api/jobs/start"
+                  hx-target="#progress-section"
+                  hx-swap="innerHTML"
+                  hx-indicator="#run-spinner"
+                  @submit="processingStarted = true"
+                  class="max-w-4xl mx-auto">
+
+                <template x-ref="settingsFields"></template>
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    <!-- Left column: Paths -->
+                    <div class="space-y-4">
+                        <h2 class="text-sm font-semibold text-gray-400 uppercase tracking-wider">Input</h2>
+                        <div>
+                            <label class="block text-sm text-gray-300 mb-1">Original Image</label>
+                            <input type="text" name="original_path" x-model="originalPath"
+                                   class="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white
+                                          focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+                                   placeholder="/path/to/original.png" />
+                        </div>
+                        <div>
+                            <label class="block text-sm text-gray-300 mb-1">Input Folder</label>
+                            <input type="text" name="input_path" x-model="inputPath"
+                                   class="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white
+                                          focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+                                   placeholder="/path/to/images" />
+                        </div>
+                        <div>
+                            <label class="block text-sm text-gray-300 mb-1">Top-K (per folder)</label>
+                            <input type="number" name="top_k" x-model.number="topK" min="1" max="100"
+                                   class="w-32 bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white
+                                          focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent" />
+                        </div>
+                    </div>
+
+                    <!-- Right column: Weights -->
+                    <div class="space-y-4">
+                        <h2 class="text-sm font-semibold text-gray-400 uppercase tracking-wider">Scoring</h2>
+                        <div>
+                            <div class="flex items-center justify-between mb-1">
+                                <label class="text-sm text-gray-300">Face Weight</label>
+                                <span class="text-xs font-mono text-indigo-400" x-text="faceWeight.toFixed(2)"></span>
+                            </div>
+                            <input type="range" name="face_weight" min="0" max="1" step="0.05"
+                                   x-model.number="faceWeight"
+                                   @input="clipWeight = Math.round((1 - faceWeight) * 100) / 100"
+                                   class="w-full h-2 bg-gray-700 rounded-lg appearance-none cursor-pointer accent-indigo-500" />
+                        </div>
+                        <div>
+                            <div class="flex items-center justify-between mb-1">
+                                <label class="text-sm text-gray-300">CLIP Weight</label>
+                                <span class="text-xs font-mono text-indigo-400" x-text="clipWeight.toFixed(2)"></span>
+                            </div>
+                            <input type="range" name="clip_weight" min="0" max="1" step="0.05"
+                                   x-model.number="clipWeight"
+                                   @input="faceWeight = Math.round((1 - clipWeight) * 100) / 100"
+                                   class="w-full h-2 bg-gray-700 rounded-lg appearance-none cursor-pointer accent-indigo-500" />
+                        </div>
+                        <div>
+                            <div class="flex items-center justify-between mb-1">
+                                <label class="text-sm text-gray-300">Min Face Detection Score</label>
+                                <span class="text-xs font-mono text-indigo-400" x-text="minFaceScore.toFixed(2)"></span>
+                            </div>
+                            <input type="range" name="min_face_score" min="0" max="1" step="0.05"
+                                   x-model.number="minFaceScore"
+                                   class="w-full h-2 bg-gray-700 rounded-lg appearance-none cursor-pointer accent-indigo-500" />
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Run button -->
+                <div class="mt-6 flex items-center gap-4">
+                    <button type="submit"
+                            class="px-8 py-3 bg-indigo-600 hover:bg-indigo-500 text-white font-semibold rounded-lg
+                                   transition-colors duration-200 flex items-center gap-2 shadow-lg shadow-indigo-500/20">
+                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                  d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z" />
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                  d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                        </svg>
+                        Start Processing
+                    </button>
+                    <div id="run-spinner" class="htmx-indicator">
+                        <div class="animate-spin h-5 w-5 border-2 border-indigo-400 border-t-transparent rounded-full"></div>
+                    </div>
+                </div>
+            </form>
+        </div>
+
+        <!-- Progress section (visible only during processing) -->
+        <div id="progress-section" class="px-6 py-4 shrink-0" x-show="processingStarted && !hasResults"></div>
+
+        <!-- Results section -->
+        <div id="results-section" class="flex-1 overflow-hidden"></div>
+    </div>
+
+    <!-- Settings modal (overlay) -->
+    <div x-show="settingsOpen" x-transition:enter="transition ease-out duration-200"
+         x-transition:enter-start="opacity-0" x-transition:enter-end="opacity-100"
+         x-transition:leave="transition ease-in duration-150"
+         x-transition:leave-start="opacity-100" x-transition:leave-end="opacity-0"
+         class="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm"
+         style="display: none;"
+         @keydown.escape.window="if (settingsOpen) settingsOpen = false">
+
+        <div class="bg-gray-800 rounded-xl shadow-2xl border border-gray-700 w-full max-w-2xl mx-4"
+             @click.outside="settingsOpen = false">
+
+            <!-- Header -->
+            <div class="flex items-center justify-between px-5 py-3 border-b border-gray-700">
+                <h3 class="text-lg font-semibold text-white">Settings</h3>
+                <button @click="settingsOpen = false"
+                        class="p-1.5 rounded-lg hover:bg-gray-700 text-gray-400 hover:text-white transition-colors">
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+                    </svg>
+                </button>
+            </div>
+
+            <!-- Form -->
+            <form hx-post="/api/jobs/start"
+                  hx-target="#progress-section"
+                  hx-swap="innerHTML"
+                  @submit="hasResults = false; settingsOpen = false"
+                  class="p-5">
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-5">
+                    <div class="space-y-3">
+                        <h2 class="text-xs font-semibold text-gray-500 uppercase tracking-wider">Input</h2>
+                        <div>
+                            <label class="block text-xs text-gray-400 mb-1">Original Image</label>
+                            <input type="text" name="original_path" x-model="originalPath"
+                                   class="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-1.5 text-sm text-white
+                                          focus:outline-none focus:ring-2 focus:ring-indigo-500" />
+                        </div>
+                        <div>
+                            <label class="block text-xs text-gray-400 mb-1">Input Folder</label>
+                            <input type="text" name="input_path" x-model="inputPath"
+                                   class="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-1.5 text-sm text-white
+                                          focus:outline-none focus:ring-2 focus:ring-indigo-500" />
+                        </div>
+                        <div>
+                            <label class="block text-xs text-gray-400 mb-1">Top-K (per folder)</label>
+                            <input type="number" name="top_k" x-model.number="topK" min="1" max="100"
+                                   class="w-24 bg-gray-700 border border-gray-600 rounded-lg px-3 py-1.5 text-sm text-white
+                                          focus:outline-none focus:ring-2 focus:ring-indigo-500" />
+                        </div>
+                    </div>
+                    <div class="space-y-3">
+                        <h2 class="text-xs font-semibold text-gray-500 uppercase tracking-wider">Scoring</h2>
+                        <div>
+                            <div class="flex justify-between text-xs text-gray-400 mb-1">
+                                <span>Face Weight</span><span class="font-mono text-indigo-400" x-text="faceWeight.toFixed(2)"></span>
+                            </div>
+                            <input type="range" name="face_weight" min="0" max="1" step="0.05"
+                                   x-model.number="faceWeight"
+                                   @input="clipWeight = Math.round((1 - faceWeight) * 100) / 100"
+                                   class="w-full h-1.5 bg-gray-700 rounded appearance-none cursor-pointer accent-indigo-500" />
+                        </div>
+                        <div>
+                            <div class="flex justify-between text-xs text-gray-400 mb-1">
+                                <span>CLIP Weight</span><span class="font-mono text-indigo-400" x-text="clipWeight.toFixed(2)"></span>
+                            </div>
+                            <input type="range" name="clip_weight" min="0" max="1" step="0.05"
+                                   x-model.number="clipWeight"
+                                   @input="faceWeight = Math.round((1 - clipWeight) * 100) / 100"
+                                   class="w-full h-1.5 bg-gray-700 rounded appearance-none cursor-pointer accent-indigo-500" />
+                        </div>
+                        <div>
+                            <div class="flex justify-between text-xs text-gray-400 mb-1">
+                                <span>Min Face Score</span><span class="font-mono text-indigo-400" x-text="minFaceScore.toFixed(2)"></span>
+                            </div>
+                            <input type="range" name="min_face_score" min="0" max="1" step="0.05"
+                                   x-model.number="minFaceScore"
+                                   class="w-full h-1.5 bg-gray-700 rounded appearance-none cursor-pointer accent-indigo-500" />
+                        </div>
+                    </div>
+                </div>
+                <div class="mt-4 flex items-center gap-3">
+                    <button type="submit"
+                            class="px-6 py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-medium rounded-lg
+                                   transition-colors flex items-center gap-2">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                  d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                        </svg>
+                        Rerun
+                    </button>
+                    <button type="button" @click="settingsOpen = false"
+                            class="px-6 py-2 text-sm font-medium text-gray-400 hover:text-white transition-colors">
+                        Cancel
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Compare panel (overlay) -->
+    <div x-show="comparing" x-transition:enter="transition ease-out duration-200"
+         x-transition:enter-start="opacity-0" x-transition:enter-end="opacity-100"
+         x-transition:leave="transition ease-in duration-150"
+         x-transition:leave-start="opacity-100" x-transition:leave-end="opacity-0"
+         class="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm"
+         style="display: none;"
+         @keydown.escape.window="if (comparing) closeCompare()"
+         @keydown.left.window="if (comparing) compareNav(-1)"
+         @keydown.right.window="if (comparing) compareNav(1)">
+
+        <div class="bg-gray-800 rounded-xl shadow-2xl border border-gray-700 flex flex-col"
+             style="width: calc(100vw - 2rem); height: calc(100vh - 2rem); max-width: 1600px;"
+             @click.outside="closeCompare()">
+
+            <!-- Header: title + scores + select + nav -->
+            <div class="flex items-center justify-between px-4 py-3 border-b border-gray-700 shrink-0">
+                <!-- Left: title, counter, scores -->
+                <div class="flex items-center gap-3">
+                    <h3 class="text-lg font-semibold text-white">Compare</h3>
+                    <span class="text-xs text-gray-500" x-text="compareIndex >= 0 ? (compareIndex + 1) + ' / ' + allImages.length : ''"></span>
+                    <div class="flex items-center gap-2 ml-1">
+                        <span class="px-2.5 py-1 rounded-full text-xs font-bold bg-indigo-500/25 text-indigo-300" x-text="'Score ' + compareFinalScore"></span>
+                        <span class="px-2.5 py-1 rounded-full text-xs font-medium bg-blue-500/15 text-blue-400" x-text="'Face ' + compareFaceScore"></span>
+                        <span class="px-2.5 py-1 rounded-full text-xs font-medium bg-purple-500/15 text-purple-400" x-text="'CLIP ' + compareClipScore"></span>
+                    </div>
+                </div>
+                <!-- Right: select btn + nav + close -->
+                <div class="flex items-center gap-2">
+                    <!-- Select / Deselect button -->
+                    <button @click="toggleCompareSelection()"
+                            class="px-3 py-1.5 rounded-lg text-xs font-medium transition-colors"
+                            :class="compareSelected
+                                ? 'bg-red-500/20 text-red-400 hover:bg-red-500/30'
+                                : 'bg-indigo-500/20 text-indigo-300 hover:bg-indigo-500/30'"
+                            x-text="compareSelected ? 'Deselect' : 'Select'">
+                    </button>
+                    <div class="w-px h-5 bg-gray-700 mx-1"></div>
+                    <!-- Nav arrows -->
+                    <button @click="compareNav(-1)"
+                            class="p-1.5 rounded-lg hover:bg-gray-700 text-gray-400 hover:text-white transition-colors"
+                            title="Previous (Left arrow)">
+                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7" />
+                        </svg>
+                    </button>
+                    <button @click="compareNav(1)"
+                            class="p-1.5 rounded-lg hover:bg-gray-700 text-gray-400 hover:text-white transition-colors"
+                            title="Next (Right arrow)">
+                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" />
+                        </svg>
+                    </button>
+                    <!-- Close -->
+                    <button @click="closeCompare()"
+                            class="p-1.5 rounded-lg hover:bg-gray-700 text-gray-400 hover:text-white transition-colors ml-2">
+                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+                        </svg>
+                    </button>
+                </div>
+            </div>
+
+            <!-- Images side by side — fill remaining height -->
+            <div class="flex-1 min-h-0 grid grid-cols-2 gap-4 p-4">
+                <div class="flex flex-col min-h-0">
+                    <h4 class="text-sm font-medium text-gray-400 text-center mb-2 shrink-0">Original</h4>
+                    <div class="flex-1 min-h-0 rounded-lg overflow-hidden bg-gray-900 border border-gray-700 flex items-center justify-center">
+                        <img :src="originalImageSrc" alt="Original" class="max-w-full max-h-full object-contain" />
+                    </div>
+                </div>
+                <div class="flex flex-col min-h-0">
+                    <h4 class="text-sm font-medium text-gray-400 text-center mb-2 shrink-0">
+                        <span x-show="compareFolder && compareFolder !== '.'" class="text-gray-500" x-text="compareFolder + ' / '"></span><span class="text-gray-300" x-text="compareFilename"></span>
+                    </h4>
+                    <div class="flex-1 min-h-0 rounded-lg overflow-hidden bg-gray-900 border border-gray-700 flex items-center justify-center">
+                        <img :src="compareImage" alt="Candidate" class="max-w-full max-h-full object-contain" />
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+function app() {
+    return {
+        // Settings (shared between initial form and rerun form)
+        originalPath: 'data/original.png',
+        inputPath: 'data/output',
+        topK: 5,
+        faceWeight: 0.7,
+        clipWeight: 0.3,
+        minFaceScore: 0.5,
+        hasResults: false,
+        processingStarted: false,
+        settingsOpen: false,
+
+        // Filter state
+        activeFilter: 'all',  // 'all' | 'selected' | 'scored' | 'rejected'
+
+        // Compare state
+        comparing: false,
+        compareImage: '',
+        compareFilename: '',
+        compareFaceScore: '',
+        compareClipScore: '',
+        compareFinalScore: '',
+        compareFolder: '',
+        compareSelected: false,
+        originalImageSrc: '',
+        compareIndex: -1,
+        lastComparedCardId: '',
+
+        // All images list for arrow-key navigation in compare mode
+        // Populated from DOM after results load
+        allImages: [],  // [{src, filename, face_score, clip_score, final_score, cardId}, ...]
+
+        openCompare(detail) {
+            this.comparing = true;
+            this.compareImage = detail.src;
+            this.compareFilename = detail.filename;
+            this.compareFaceScore = detail.face_score;
+            this.compareClipScore = detail.clip_score;
+            this.compareFinalScore = detail.final_score;
+            this.compareFolder = detail.folder || '';
+
+            // Find index in allImages
+            this.compareIndex = this.allImages.findIndex(img => img.src === detail.src);
+
+            // Track card id for highlight
+            if (detail.cardId) {
+                this.lastComparedCardId = detail.cardId;
+            }
+
+            // Sync selection state from DOM
+            this._syncCompareSelected();
+        },
+
+        closeCompare() {
+            this.comparing = false;
+            // Highlight last compared card with yellow border
+            this._highlightLastCompared();
+        },
+
+        compareNav(direction) {
+            if (this.allImages.length === 0) return;
+            let newIdx = this.compareIndex + direction;
+            if (newIdx < 0) newIdx = this.allImages.length - 1;
+            if (newIdx >= this.allImages.length) newIdx = 0;
+            this.compareIndex = newIdx;
+
+            let img = this.allImages[newIdx];
+            this.compareImage = img.src;
+            this.compareFilename = img.filename;
+            this.compareFaceScore = img.face_score;
+            this.compareClipScore = img.clip_score;
+            this.compareFinalScore = img.final_score;
+            this.compareFolder = img.folder || '';
+            this.lastComparedCardId = img.cardId;
+            this._syncCompareSelected();
+        },
+
+        _syncCompareSelected() {
+            if (!this.lastComparedCardId) { this.compareSelected = false; return; }
+            let card = document.getElementById(this.lastComparedCardId);
+            this.compareSelected = card ? card.classList.contains('border-indigo-500') : false;
+        },
+
+        toggleCompareSelection() {
+            if (!this.lastComparedCardId) return;
+            let card = document.getElementById(this.lastComparedCardId);
+            if (!card) return;
+            // Issue HTMX request directly instead of clicking the button,
+            // because .click() causes outerHTML swap which removes the click
+            // target from DOM, triggering @click.outside → closing the modal.
+            let toggleBtn = card.querySelector('[hx-post*="/toggle/"]');
+            if (toggleBtn) {
+                let url = toggleBtn.getAttribute('hx-post');
+                // Flip state optimistically for instant UI feedback
+                this.compareSelected = !this.compareSelected;
+                htmx.ajax('POST', url, {target: card, swap: 'outerHTML'});
+            }
+        },
+
+        _highlightLastCompared() {
+            // Remove previous highlight
+            document.querySelectorAll('.ring-yellow-400').forEach(el => {
+                el.classList.remove('ring-2', 'ring-yellow-400');
+            });
+            // Add highlight to last compared card
+            if (this.lastComparedCardId) {
+                let card = document.getElementById(this.lastComparedCardId);
+                if (card) {
+                    card.classList.add('ring-2', 'ring-yellow-400');
+                    // Scroll into view
+                    card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                }
+            }
+        },
+
+        setFilter(filter) {
+            this.activeFilter = filter;
+            this.applyFilter();
+            this.buildImageList();
+        },
+
+        applyFilter() {
+            const cards = document.querySelectorAll('[data-status]');
+            cards.forEach(card => {
+                if (this.activeFilter === 'all') {
+                    card.style.display = '';
+                } else {
+                    // After toggle, selected status is determined by border class
+                    let status = card.dataset.status;
+                    // For "selected" filter, also check live DOM state (border class)
+                    // since toggle changes selection without reloading
+                    const isSelected = card.classList.contains('border-indigo-500');
+                    if (this.activeFilter === 'selected') {
+                        card.style.display = isSelected ? '' : 'none';
+                    } else if (this.activeFilter === 'scored') {
+                        // Scored = has final_score and NOT selected and NOT rejected
+                        card.style.display = (!isSelected && status !== 'rejected') ? '' : 'none';
+                    } else if (this.activeFilter === 'rejected') {
+                        card.style.display = status === 'rejected' ? '' : 'none';
+                    }
+                }
+            });
+        },
+
+        buildImageList() {
+            // Collect all visible (not filtered-out) image cards from the DOM
+            this.allImages = [];
+            document.querySelectorAll('[data-compare-src]').forEach(el => {
+                // Skip hidden (filtered-out) cards
+                if (el.style.display === 'none') return;
+                this.allImages.push({
+                    src: el.dataset.compareSrc,
+                    filename: el.dataset.compareFilename,
+                    folder: el.dataset.compareFolder || '',
+                    face_score: el.dataset.compareFace,
+                    clip_score: el.dataset.compareClip,
+                    final_score: el.dataset.compareFinal,
+                    cardId: el.id,
+                });
+            });
+        },
+    }
+}
+
+// After HTMX loads results, update Alpine state
+function _activateResults() {
+    let rs = document.getElementById('results-section');
+    if (!rs || rs.innerHTML.trim() === '') return;
+    let appEl = document.querySelector('[x-data]');
+    if (!appEl) return;
+    let scope = Alpine.$data(appEl);
+    if (!scope || scope.hasResults) return;  // already activated
+    scope.hasResults = true;
+    let jobInput = document.getElementById('current-job-id');
+    if (jobInput) {
+        scope.originalImageSrc = '/images/' + jobInput.value + '/original';
+    }
+    scope.buildImageList();
+}
+// Update selected count in stats bar, export button, and folder sidebar counters
+function _updateSelectedCount() {
+    let count = document.querySelectorAll('[data-compare-src].border-indigo-500').length;
+    let statsEl = document.getElementById('stats-selected');
+    let exportEl = document.getElementById('export-count');
+    if (statsEl) statsEl.textContent = count;
+    if (exportEl) exportEl.textContent = count;
+    // Update per-folder sidebar counters
+    document.querySelectorAll('[id^="folder-count-"]').forEach(span => {
+        let folderId = span.id.replace('folder-count-', 'folder-');
+        let panel = document.getElementById(folderId);
+        if (!panel) return;
+        let total = span.dataset.folderTotal || '0';
+        let selCount = panel.querySelectorAll('[data-compare-src].border-indigo-500').length;
+        span.textContent = selCount + '/' + total;
+    });
+}
+// Re-apply active filter after any HTMX swap (e.g. toggle select/deselect)
+function _reapplyFilter() {
+    let appEl = document.querySelector('[x-data]');
+    if (!appEl) return;
+    let scope = Alpine.$data(appEl);
+    if (!scope || !scope.hasResults) return;
+    scope.applyFilter();
+    scope.buildImageList();
+}
+// Listen for ANY htmx swap — check if results-section now has content + update counts
+document.addEventListener('htmx:afterSwap', function(event) {
+    setTimeout(_activateResults, 100);
+    setTimeout(_updateSelectedCount, 150);
+    setTimeout(_reapplyFilter, 200);
+});
+document.addEventListener('htmx:afterSettle', function(event) {
+    setTimeout(_activateResults, 100);
+    setTimeout(_updateSelectedCount, 150);
+    setTimeout(_reapplyFilter, 200);
+});
+// Fallback: MutationObserver on results-section
+(function() {
+    let rs = document.getElementById('results-section');
+    if (!rs) return;
+    new MutationObserver(function() {
+        setTimeout(_activateResults, 50);
+    }).observe(rs, { childList: true });
+})();
+</script>
+{% endblock %}

@@ -11,20 +11,21 @@ Usage (default — auto-detects flat or recursive):
 
 Custom paths:
     python character_sniper.py --original path/to/ref.png --input path/to/images --report
+
+Web UI:
+    python server.py
 """
 
 from __future__ import annotations
 
 import argparse
 import csv
-import os
-import platform
 import shutil
 import sys
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 import cv2
 import numpy as np
@@ -76,9 +77,8 @@ class FaceAnalyzer:
         self.app = FaceAnalysis(name="buffalo_l", providers=providers)
         self.app.prepare(ctx_id=0, det_size=(det_size, det_size))
 
-    # noinspection PyUnresolvedReferences
     def get_best_face(self, img_bgr: np.ndarray, min_det_score: float = 0.5):
-        """Return the highest‑confidence face or None."""
+        """Return the highest-confidence face or None."""
         faces = self.app.get(img_bgr)
         if not faces:
             return None
@@ -90,23 +90,18 @@ class FaceAnalyzer:
     @staticmethod
     def landmarks_ok(face) -> bool:
         """Basic sanity: eyes above nose above mouth."""
-        kps = face.kps  # (5, 2) — left_eye, right_eye, nose, left_mouth, right_mouth
+        kps = face.kps
         if kps is None:
             return False
         left_eye, right_eye, nose, left_mouth, right_mouth = kps
-
-        # vertical order
         if not (left_eye[1] < nose[1] and right_eye[1] < nose[1]):
             return False
         if not (nose[1] < left_mouth[1] and nose[1] < right_mouth[1]):
             return False
-
-        # minimum inter‑eye distance relative to bbox
         eye_dist = np.linalg.norm(right_eye - left_eye)
         bbox_w = face.bbox[2] - face.bbox[0]
         if bbox_w > 0 and eye_dist / bbox_w < 0.1:
             return False
-
         return True
 
     @staticmethod
@@ -133,23 +128,18 @@ class CLIPEncoder:
 
     @torch.no_grad()
     def encode_image(self, pil_img: Image.Image) -> np.ndarray:
-        """Return L2‑normalised embedding (1‑D numpy)."""
+        """Return L2-normalised embedding (1-D numpy)."""
         tensor = self.preprocess(pil_img).unsqueeze(0).to(self.device)
         features = self.model.encode_image(tensor)
         features = features / features.norm(dim=-1, keepdim=True)
         return features.cpu().numpy().flatten()
 
-    @torch.no_grad()
-    def encode_images_batch(self, pil_imgs: list[Image.Image]) -> np.ndarray:
-        """Batch‑encode a list of PIL images → (N, dim) numpy."""
-        if not pil_imgs:
-            return np.empty((0, 512))
-        tensors = torch.stack([self.preprocess(img) for img in pil_imgs]).to(
-            self.device
-        )
-        features = self.model.encode_image(tensors)
-        features = features / features.norm(dim=-1, keepdim=True)
-        return features.cpu().numpy()
+
+class DummyCLIP:
+    """No-op CLIP encoder for face-only mode."""
+
+    def encode_image(self, _):
+        return np.zeros(512)
 
 
 # ---------------------------------------------------------------------------
@@ -160,7 +150,7 @@ IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tiff"}
 
 
 def list_images(folder: Path) -> list[Path]:
-    """List image files in *folder* (non‑recursive, sorted)."""
+    """List image files in *folder* (non-recursive, sorted)."""
     return sorted(
         p
         for p in folder.iterdir()
@@ -170,23 +160,20 @@ def list_images(folder: Path) -> list[Path]:
 
 def load_bgr(path: Path) -> Optional[np.ndarray]:
     """Read image as BGR numpy via OpenCV."""
-    img = cv2.imread(str(path))
-    return img
+    return cv2.imread(str(path))
 
 
 def crop_face_region(img_bgr: np.ndarray, face, expand: float = 1.5) -> Image.Image:
-    """Crop an expanded bounding‑box around the face, return as RGB PIL Image."""
+    """Crop an expanded bounding-box around the face, return as RGB PIL Image."""
     h, w = img_bgr.shape[:2]
     x1, y1, x2, y2 = face.bbox
     bw, bh = x2 - x1, y2 - y1
     cx, cy = (x1 + x2) / 2, (y1 + y2) / 2
-
     new_w, new_h = bw * expand, bh * expand
     nx1 = max(0, int(cx - new_w / 2))
     ny1 = max(0, int(cy - new_h / 2))
     nx2 = min(w, int(cx + new_w / 2))
     ny2 = min(h, int(cy + new_h / 2))
-
     crop = img_bgr[ny1:ny2, nx1:nx2]
     return Image.fromarray(cv2.cvtColor(crop, cv2.COLOR_BGR2RGB))
 
@@ -205,7 +192,7 @@ def cosine_sim(a: np.ndarray, b: np.ndarray) -> float:
 
 
 # ---------------------------------------------------------------------------
-# Per‑image result
+# Per-image result
 # ---------------------------------------------------------------------------
 
 
@@ -221,38 +208,98 @@ class ImageScore:
     reject_reason: Optional[str] = None
     selected: bool = False
 
+    def to_dict(self) -> dict:
+        """Serialise for JSON / web responses."""
+        return {
+            "path": str(self.path),
+            "filename": self.path.name,
+            "folder": self.folder,
+            "face_score": self.face_score,
+            "clip_score": self.clip_score,
+            "final_score": self.final_score,
+            "det_score": self.det_score,
+            "face_bbox": self.face_bbox,
+            "reject_reason": self.reject_reason,
+            "selected": self.selected,
+        }
+
 
 # ---------------------------------------------------------------------------
-# Core processing
+# Progress callback type
+# ---------------------------------------------------------------------------
+
+# on_progress(current_index, total, current_filename)
+ProgressCallback = Callable[[int, int, str], None]
+
+
+# ---------------------------------------------------------------------------
+# Auto-detect flat vs recursive mode
 # ---------------------------------------------------------------------------
 
 
-def process_images(
+def detect_mode(input_dir: Path) -> bool:
+    """Return True for recursive (subfolder) mode, False for flat."""
+    has_root_images = any(
+        p.is_file() and p.suffix.lower() in IMAGE_EXTENSIONS
+        for p in input_dir.iterdir()
+    )
+    subdirs_with_images = [
+        d
+        for d in input_dir.iterdir()
+        if d.is_dir()
+        and not d.name.startswith(".")
+        and any(
+            f.suffix.lower() in IMAGE_EXTENSIONS for f in d.iterdir() if f.is_file()
+        )
+    ]
+    if subdirs_with_images:
+        return True
+    if has_root_images:
+        return False
+    raise FileNotFoundError(
+        f"No images found in {input_dir} (neither at root nor in subfolders)"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Discover folders
+# ---------------------------------------------------------------------------
+
+
+def discover_folders(input_dir: Path) -> tuple[bool, list[Path]]:
+    """Return (is_recursive, list_of_folders_to_process)."""
+    recursive = detect_mode(input_dir)
+    if recursive:
+        subfolders = sorted(
+            d for d in input_dir.iterdir() if d.is_dir() and not d.name.startswith(".")
+        )
+        return True, subfolders
+    return False, [input_dir]
+
+
+# ---------------------------------------------------------------------------
+# Core processing — with progress callback
+# ---------------------------------------------------------------------------
+
+
+def prepare_original(
     original_path: Path,
-    image_paths: list[Path],
-    folder_name: str,
     face_analyzer: FaceAnalyzer,
-    clip_encoder: CLIPEncoder,
-    *,
-    face_weight: float = 0.7,
-    clip_weight: float = 0.3,
+    clip_encoder,
     clip_mode: str = "crop",
     crop_expand: float = 1.5,
-    min_face_score: float = 0.5,
-    min_similarity: float = 0.0,
-    top_k: int = 5,
-) -> list[ImageScore]:
-    """Score every image in *image_paths* against *original_path*, return all
-    ImageScore objects (with top_k marked as selected)."""
+):
+    """Extract embeddings from the original reference image.
 
-    # --- original embeddings ---
+    Returns (orig_face_emb, orig_clip_emb) or raises ValueError.
+    """
     orig_bgr = load_bgr(original_path)
     if orig_bgr is None:
-        sys.exit(f"Cannot read original image: {original_path}")
+        raise ValueError(f"Cannot read original image: {original_path}")
 
     orig_face = face_analyzer.get_best_face(orig_bgr, min_det_score=0.0)
     if orig_face is None:
-        sys.exit(f"No face detected in original image: {original_path}")
+        raise ValueError(f"No face detected in original image: {original_path}")
 
     orig_face_emb = orig_face.normed_embedding
 
@@ -262,64 +309,116 @@ def process_images(
         orig_clip_img = pil_from_path(original_path)
     orig_clip_emb = clip_encoder.encode_image(orig_clip_img)
 
-    # --- process candidates ---
-    results: list[ImageScore] = []
+    return orig_face_emb, orig_clip_emb
 
-    for img_path in tqdm(
-        image_paths, desc=f"  [{folder_name}]", unit="img", leave=False
-    ):
-        score = ImageScore(path=img_path, folder=folder_name)
 
-        img_bgr = load_bgr(img_path)
-        if img_bgr is None:
-            score.reject_reason = "unreadable"
-            results.append(score)
-            continue
+def score_single_image(
+    img_path: Path,
+    folder_name: str,
+    face_analyzer: FaceAnalyzer,
+    clip_encoder,
+    orig_face_emb: np.ndarray,
+    orig_clip_emb: np.ndarray,
+    *,
+    face_weight: float = 0.7,
+    clip_weight: float = 0.3,
+    clip_mode: str = "crop",
+    crop_expand: float = 1.5,
+    min_face_score: float = 0.5,
+    min_similarity: float = 0.0,
+) -> ImageScore:
+    """Score a single image against pre-computed original embeddings."""
+    score = ImageScore(path=img_path, folder=folder_name)
 
-        face = face_analyzer.get_best_face(img_bgr, min_det_score=min_face_score)
-        if face is None:
-            score.reject_reason = "no_face_or_low_det"
-            results.append(score)
-            continue
+    img_bgr = load_bgr(img_path)
+    if img_bgr is None:
+        score.reject_reason = "unreadable"
+        return score
 
-        score.det_score = round(float(face.det_score), 4)
-        score.face_bbox = str([int(v) for v in face.bbox])
+    face = face_analyzer.get_best_face(img_bgr, min_det_score=min_face_score)
+    if face is None:
+        score.reject_reason = "no_face_or_low_det"
+        return score
 
-        if not face_analyzer.landmarks_ok(face):
-            score.reject_reason = "bad_landmarks"
-            results.append(score)
-            continue
+    score.det_score = round(float(face.det_score), 4)
+    score.face_bbox = str([int(v) for v in face.bbox])
 
-        if not face_analyzer.face_bbox_big_enough(face):
-            score.reject_reason = "face_too_small"
-            results.append(score)
-            continue
+    if not face_analyzer.landmarks_ok(face):
+        score.reject_reason = "bad_landmarks"
+        return score
 
-        # face similarity
-        face_sim = cosine_sim(orig_face_emb, face.normed_embedding)
-        score.face_score = round(face_sim, 4)
+    if not face_analyzer.face_bbox_big_enough(face):
+        score.reject_reason = "face_too_small"
+        return score
 
-        if face_sim < min_similarity:
-            score.reject_reason = f"face_sim_below_{min_similarity}"
-            results.append(score)
-            continue
+    # face similarity
+    face_sim = cosine_sim(orig_face_emb, face.normed_embedding)
+    score.face_score = round(face_sim, 4)
 
-        # clip similarity
+    if face_sim < min_similarity:
+        score.reject_reason = f"face_sim_below_{min_similarity}"
+        return score
+
+    # clip similarity
+    if clip_weight > 0:
         if clip_mode == "crop":
             clip_img = crop_face_region(img_bgr, face, expand=crop_expand)
         else:
             clip_img = pil_from_path(img_path)
         clip_sim = cosine_sim(orig_clip_emb, clip_encoder.encode_image(clip_img))
         score.clip_score = round(clip_sim, 4)
+    else:
+        clip_sim = 0.0
+        score.clip_score = 0.0
 
-        # final weighted score
-        score.final_score = round(face_weight * face_sim + clip_weight * clip_sim, 4)
+    # final weighted score
+    score.final_score = round(face_weight * face_sim + clip_weight * clip_sim, 4)
+    return score
 
-        results.append(score)
 
-    # --- select top‑k ---
+def process_folder(
+    image_paths: list[Path],
+    folder_name: str,
+    face_analyzer: FaceAnalyzer,
+    clip_encoder,
+    orig_face_emb: np.ndarray,
+    orig_clip_emb: np.ndarray,
+    *,
+    face_weight: float = 0.7,
+    clip_weight: float = 0.3,
+    clip_mode: str = "crop",
+    crop_expand: float = 1.5,
+    min_face_score: float = 0.5,
+    min_similarity: float = 0.0,
+    top_k: int = 5,
+    on_progress: Optional[ProgressCallback] = None,
+) -> list[ImageScore]:
+    """Score all images in a folder, mark top_k as selected."""
+    results: list[ImageScore] = []
+
+    for i, img_path in enumerate(image_paths):
+        result = score_single_image(
+            img_path,
+            folder_name,
+            face_analyzer,
+            clip_encoder,
+            orig_face_emb,
+            orig_clip_emb,
+            face_weight=face_weight,
+            clip_weight=clip_weight,
+            clip_mode=clip_mode,
+            crop_expand=crop_expand,
+            min_face_score=min_face_score,
+            min_similarity=min_similarity,
+        )
+        results.append(result)
+
+        if on_progress:
+            on_progress(i + 1, len(image_paths), img_path.name)
+
+    # select top-k
     scorable = [r for r in results if r.final_score is not None]
-    scorable.sort(key=lambda r: r.final_score, reverse=True)
+    scorable.sort(key=lambda r: (r.final_score or 0), reverse=True)
     for r in scorable[:top_k]:
         r.selected = True
 
@@ -362,7 +461,7 @@ def write_csv(results: list[ImageScore], csv_path: Path):
                     r.selected,
                 ]
             )
-    print(f"Report saved → {csv_path}")
+    print(f"Report saved -> {csv_path}")
 
 
 # ---------------------------------------------------------------------------
@@ -373,65 +472,30 @@ def write_csv(results: list[ImageScore], csv_path: Path):
 def copy_selected(results: list[ImageScore], output_dir: Path, recursive: bool):
     selected = [r for r in results if r.selected]
     if not selected:
-        print("No images selected — nothing to copy.")
-        return
-
+        print("No images selected -- nothing to copy.")
+        return 0
     for r in selected:
-        if recursive:
-            dest_dir = output_dir / r.folder
-        else:
-            dest_dir = output_dir
+        dest_dir = output_dir / r.folder if recursive else output_dir
         dest_dir.mkdir(parents=True, exist_ok=True)
         shutil.copy2(r.path, dest_dir / r.path.name)
-
-    print(f"Copied {len(selected)} images → {output_dir}")
+    print(f"Copied {len(selected)} images -> {output_dir}")
+    return len(selected)
 
 
 # ---------------------------------------------------------------------------
-# Auto-detect flat vs recursive mode
+# Normalise weights helper
 # ---------------------------------------------------------------------------
 
 
-def detect_mode(input_dir: Path) -> bool:
-    """Return True if we should run in recursive (subfolder) mode.
-
-    Auto-detect: check if input_dir contains subfolders with images.
-      - Subfolders with images exist → recursive.
-      - Images at root level only    → flat.
-      - Both exist                   → recursive (subfolders take priority).
-    """
-    has_root_images = any(
-        p.is_file() and p.suffix.lower() in IMAGE_EXTENSIONS
-        for p in input_dir.iterdir()
-    )
-    subdirs_with_images = [
-        d
-        for d in input_dir.iterdir()
-        if d.is_dir()
-        and not d.name.startswith(".")
-        and any(
-            f.suffix.lower() in IMAGE_EXTENSIONS for f in d.iterdir() if f.is_file()
-        )
-    ]
-
-    if subdirs_with_images and not has_root_images:
-        print(
-            f"  [auto] Detected {len(subdirs_with_images)} subfolders with images → recursive mode"
-        )
-        return True
-    if subdirs_with_images and has_root_images:
-        print(
-            f"  [auto] Detected {len(subdirs_with_images)} subfolders + root images → recursive mode"
-        )
-        print(
-            f"         (images directly in {input_dir}/ will be ignored; use --flat to override)"
-        )
-        return True
-    if has_root_images:
-        print(f"  [auto] Detected images directly in {input_dir}/ → flat mode")
-        return False
-
-    sys.exit(f"No images found in {input_dir} (neither at root nor in subfolders)")
+def normalise_weights(method: str, face_w: float, clip_w: float) -> tuple[float, float]:
+    if method == "face":
+        return 1.0, 0.0
+    if method == "clip":
+        return 0.0, 1.0
+    total = face_w + clip_w
+    if total <= 0:
+        raise ValueError("face_weight + clip_weight must be > 0")
+    return face_w / total, clip_w / total
 
 
 # ---------------------------------------------------------------------------
@@ -441,10 +505,9 @@ def detect_mode(input_dir: Path) -> bool:
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
-        description="Character Sniper — pick generated images most similar to an original reference.",
+        description="Character Sniper -- pick generated images most similar to an original reference.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-
     p.add_argument(
         "--original",
         type=str,
@@ -469,73 +532,21 @@ def parse_args() -> argparse.Namespace:
         default=5,
         help="How many best images to select per folder (default: 5)",
     )
-
-    p.add_argument(
-        "--method",
-        choices=["face", "clip", "combined"],
-        default="combined",
-        help="Scoring method (default: combined)",
-    )
-    p.add_argument(
-        "--face-weight",
-        type=float,
-        default=0.7,
-        help="Weight for face similarity in combined mode (default: 0.7)",
-    )
-    p.add_argument(
-        "--clip-weight",
-        type=float,
-        default=0.3,
-        help="Weight for CLIP similarity in combined mode (default: 0.3)",
-    )
-    p.add_argument(
-        "--clip-mode",
-        choices=["crop", "full"],
-        default="crop",
-        help="CLIP compares face‑crop (default) or full image",
-    )
-    p.add_argument(
-        "--crop-expand",
-        type=float,
-        default=1.5,
-        help="Expand face bbox by this factor for CLIP crop (default: 1.5)",
-    )
-
-    p.add_argument(
-        "--min-face-score",
-        type=float,
-        default=0.5,
-        help="Min InsightFace det_score to accept a face (default: 0.5)",
-    )
-    p.add_argument(
-        "--min-similarity",
-        type=float,
-        default=0.0,
-        help="Min face cosine similarity to keep (0 = disabled, default: 0)",
-    )
-
-    p.add_argument(
-        "--report", action="store_true", help="Write a CSV report with all scores"
-    )
-
-    p.add_argument(
-        "--clip-model",
-        type=str,
-        default="ViT-B-32",
-        help="OpenCLIP model name (default: ViT-B-32)",
-    )
-    p.add_argument(
-        "--clip-pretrained",
-        type=str,
-        default="laion2b_s34b_b79k",
-        help="OpenCLIP pretrained weights (default: laion2b_s34b_b79k)",
-    )
-
+    p.add_argument("--method", choices=["face", "clip", "combined"], default="combined")
+    p.add_argument("--face-weight", type=float, default=0.7)
+    p.add_argument("--clip-weight", type=float, default=0.3)
+    p.add_argument("--clip-mode", choices=["crop", "full"], default="crop")
+    p.add_argument("--crop-expand", type=float, default=1.5)
+    p.add_argument("--min-face-score", type=float, default=0.5)
+    p.add_argument("--min-similarity", type=float, default=0.0)
+    p.add_argument("--report", action="store_true", help="Write CSV report")
+    p.add_argument("--clip-model", type=str, default="ViT-B-32")
+    p.add_argument("--clip-pretrained", type=str, default="laion2b_s34b_b79k")
     return p.parse_args()
 
 
 # ---------------------------------------------------------------------------
-# Main
+# Main (CLI entry point)
 # ---------------------------------------------------------------------------
 
 
@@ -551,20 +562,7 @@ def main():
     if not input_dir.exists():
         sys.exit(f"Input folder not found: {input_dir}")
 
-    # Resolve weights based on method
-    if args.method == "face":
-        face_w, clip_w = 1.0, 0.0
-    elif args.method == "clip":
-        face_w, clip_w = 0.0, 1.0
-    else:
-        face_w, clip_w = args.face_weight, args.clip_weight
-
-    # Normalise weights
-    total = face_w + clip_w
-    if total <= 0:
-        sys.exit("face_weight + clip_weight must be > 0")
-    face_w /= total
-    clip_w /= total
+    face_w, clip_w = normalise_weights(args.method, args.face_weight, args.clip_weight)
 
     print("=" * 60)
     print("  Character Sniper")
@@ -572,8 +570,7 @@ def main():
     print(f"  Original  : {original_path}")
     print(f"  Input     : {input_dir}")
     print(f"  Output    : {output_dir}")
-    print(f"  Mode      : (auto-detect on start)")
-    print(f"  Top‑K     : {args.top_k}")
+    print(f"  Top-K     : {args.top_k}")
     print(f"  Method    : {args.method} (face={face_w:.2f}, clip={clip_w:.2f})")
     print(f"  CLIP mode : {args.clip_mode} (expand={args.crop_expand}x)")
     print(f"  Min det   : {args.min_face_score}")
@@ -581,45 +578,34 @@ def main():
     print(f"  Report    : {args.report}")
     print("=" * 60)
 
-    # ---- init models ----
     t0 = time.time()
-    print("\nLoading models …")
+    print("\nLoading models ...")
 
     face_analyzer = FaceAnalyzer()
-
-    # Skip CLIP init if weight is zero
-    clip_encoder: Optional[CLIPEncoder] = None
-    if clip_w > 0:
-        clip_encoder = CLIPEncoder(
-            model_name=args.clip_model,
-            pretrained=args.clip_pretrained,
-        )
-    else:
-        # Dummy encoder that returns zeros
-        class _DummyCLIP:
-            def encode_image(self, _):
-                return np.zeros(512)
-
-            def encode_images_batch(self, _):
-                return np.zeros((1, 512))
-
-        clip_encoder = _DummyCLIP()  # type: ignore[assignment]
+    clip_encoder = (
+        CLIPEncoder(args.clip_model, args.clip_pretrained)
+        if clip_w > 0
+        else DummyCLIP()
+    )
 
     print(f"Models loaded in {time.time() - t0:.1f}s\n")
 
-    # ---- discover folders (auto-detect mode) ----
-    recursive = detect_mode(input_dir)
-    if recursive:
-        subfolders = sorted(
-            d for d in input_dir.iterdir() if d.is_dir() and not d.name.startswith(".")
-        )
-        if not subfolders:
-            sys.exit(f"No subfolders found in {input_dir} (recursive mode)")
-        print(f"Found {len(subfolders)} subfolders\n")
-    else:
-        subfolders = [input_dir]
+    # prepare original embeddings
+    orig_face_emb, orig_clip_emb = prepare_original(
+        original_path,
+        face_analyzer,
+        clip_encoder,
+        clip_mode=args.clip_mode,
+        crop_expand=args.crop_expand,
+    )
 
-    # ---- process ----
+    # discover folders
+    recursive, subfolders = discover_folders(input_dir)
+    print(
+        f"Mode: {'recursive' if recursive else 'flat'} ({len(subfolders)} folder(s))\n"
+    )
+
+    # process
     all_results: list[ImageScore] = []
     total_selected = 0
     total_rejected = 0
@@ -628,17 +614,25 @@ def main():
     for folder in subfolders:
         images = list_images(folder)
         if not images:
-            print(f"  [{folder.name}] — no images, skipping")
             continue
 
         folder_name = folder.name if recursive else "."
 
-        results = process_images(
-            original_path=original_path,
+        # CLI progress via tqdm
+        pbar = tqdm(
+            total=len(images), desc=f"  [{folder_name}]", unit="img", leave=False
+        )
+
+        def cli_progress(current, total, filename):
+            pbar.update(1)
+
+        results = process_folder(
             image_paths=images,
             folder_name=folder_name,
             face_analyzer=face_analyzer,
             clip_encoder=clip_encoder,
+            orig_face_emb=orig_face_emb,
+            orig_clip_emb=orig_clip_emb,
             face_weight=face_w,
             clip_weight=clip_w,
             clip_mode=args.clip_mode,
@@ -646,50 +640,37 @@ def main():
             min_face_score=args.min_face_score,
             min_similarity=args.min_similarity,
             top_k=args.top_k,
+            on_progress=cli_progress,
         )
+        pbar.close()
         all_results.extend(results)
 
-        n_selected = sum(1 for r in results if r.selected)
-        n_rejected = sum(1 for r in results if r.reject_reason)
-        total_selected += n_selected
-        total_rejected += n_rejected
+        n_sel = sum(1 for r in results if r.selected)
+        n_rej = sum(1 for r in results if r.reject_reason)
+        total_selected += n_sel
+        total_rejected += n_rej
         total_processed += len(images)
 
-        # Show top picks for this folder
-        top = sorted(
-            [r for r in results if r.selected],
-            key=lambda r: r.final_score or 0,
-            reverse=True,
-        )
+        top = [r for r in results if r.selected]
+        top.sort(key=lambda r: (r.final_score or 0), reverse=True)
         if top:
-            best = top[0]
-            worst = top[-1]
             tqdm.write(
-                f"  [{folder_name}] {len(images)} imgs → "
-                f"{n_selected} selected (best={best.final_score}, "
-                f"worst={worst.final_score}), {n_rejected} rejected"
-            )
-        else:
-            tqdm.write(
-                f"  [{folder_name}] {len(images)} imgs → 0 selected, {n_rejected} rejected"
+                f"  [{folder_name}] {len(images)} imgs -> "
+                f"{n_sel} selected (best={top[0].final_score}, "
+                f"worst={top[-1].final_score}), {n_rej} rejected"
             )
 
-    # ---- copy ----
+    # copy & report
     print()
     copy_selected(all_results, output_dir, recursive)
-
-    # ---- report ----
     if args.report:
-        csv_path = output_dir / "report.csv"
-        write_csv(all_results, csv_path)
+        write_csv(all_results, output_dir / "report.csv")
 
-    # ---- summary ----
     print(f"\n{'=' * 60}")
-    print(f"  Done!")
-    print(f"  Processed : {total_processed} images")
-    print(f"  Selected  : {total_selected}")
-    print(f"  Rejected  : {total_rejected} (no face / deformed / low score)")
-    print(f"  Time      : {time.time() - t0:.1f}s")
+    print(
+        f"  Done!  {total_processed} processed, {total_selected} selected, "
+        f"{total_rejected} rejected  ({time.time() - t0:.1f}s)"
+    )
     print(f"{'=' * 60}")
 
 

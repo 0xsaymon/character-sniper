@@ -2,121 +2,144 @@
 
 Automatically select AI-generated images that are most similar to an original reference photo. Built for workflows where you generate many variations from a single reference (e.g. for LoRA training datasets) and need to pick the best ones without manually reviewing thousands of images.
 
+Available as a **CLI** for batch processing and a **Web UI** with real-time progress, filterable gallery, and side-by-side comparison.
+
 ## How it works
 
-The script compares each generated image against the original reference using two metrics:
+Each generated image is compared against the original reference using two metrics:
 
 - **Face similarity (70% weight)** — InsightFace ArcFace embeddings. Extracts a 512-dim face identity vector and computes cosine similarity. This is the primary signal: "is this the same person?"
 - **CLIP similarity (30% weight)** — OpenCLIP ViT-B-32 embeddings of the face crop region (not the full image). Captures visual style, lighting, skin texture around the face. Using crops avoids penalizing images with different body poses or camera angles.
 
+```
+score = face_similarity * face_weight + clip_similarity * clip_weight
+```
+
 Bad images are filtered automatically:
-- No face detected
-- Face detection confidence below threshold (deformed/blurry faces)
+- No face detected or detection confidence below threshold
 - Invalid facial landmark geometry (eyes-nose-mouth in wrong positions)
 - Face bounding box too small (<64px)
+- Face similarity below minimum threshold
+
+The top-K scoring images per folder are automatically selected.
 
 ## Requirements
 
 - Python 3.10+
-- macOS (Apple Silicon — MPS + CoreML) or Windows/Linux (NVIDIA GPU — CUDA)
+- macOS (Apple Silicon) or Windows/Linux (NVIDIA GPU)
+- ~2 GB disk for models (downloaded on first run)
 
 ## Setup
 
 ```bash
-# Clone
 git clone https://github.com/YOUR_USERNAME/character-sniper.git
 cd character-sniper
 
-# Create virtual environment
 python3 -m venv venv
 source venv/bin/activate   # macOS/Linux
 # venv\Scripts\activate    # Windows
 
-# Install dependencies
 pip install -r requirements.txt
 
-# macOS — uses the standard onnxruntime (CoreML support included)
-pip install onnxruntime
-
-# Windows/Linux with NVIDIA GPU
-pip install onnxruntime-gpu
+# Pick one:
+pip install onnxruntime            # macOS / CPU
+pip install onnxruntime-gpu        # NVIDIA GPU
 ```
 
-On first run, the script downloads ~900MB of model weights (InsightFace buffalo_l + OpenCLIP ViT-B-32). These are cached for subsequent runs.
+Models (InsightFace `buffalo_l` + OpenCLIP `ViT-B-32`) are downloaded automatically on first run (~900 MB).
 
 ## Data layout
 
 Place your images in the `data/` directory (gitignored):
 
 ```
-character-sniper/
-  data/
-    original.png              # your reference photo
-    output/                   # generated images go here
-      img_001.png
-      img_002.png
-      ...
+data/
+  original.png              # your reference photo
+  output/                   # generated images go here
+    img_001.png
+    img_002.png
+    ...
 ```
 
 For batch mode with multiple prompts, use subfolders:
 
 ```
-character-sniper/
-  data/
-    original.png
-    output/
-      prompt_001/             # 50-100 images per prompt
-        img_001.png
-        ...
-      prompt_002/
-        img_001.png
-        ...
+data/
+  original.png
+  output/
+    prompt_001/             # 50-100 images per prompt
+      img_001.png
+      ...
+    prompt_002/
+      img_001.png
+      ...
 ```
 
-The script auto-detects whether `output/` contains images directly (flat mode) or subfolders with images (recursive mode).
+The tool auto-detects whether `output/` contains images directly (flat mode) or subfolders (recursive mode).
 
 ## Usage
 
-### Basic (uses defaults: `data/original.png` and `data/output/`)
+### Web UI
 
 ```bash
+source venv/bin/activate
+python server.py
+```
+
+Open [http://127.0.0.1:8000](http://127.0.0.1:8000). Configure paths and scoring parameters in the settings form, then start processing.
+
+Features:
+- **Real-time progress** via Server-Sent Events
+- **Filter** results by status — all, selected, scored, rejected
+- **Compare** any image side-by-side with the original, navigate with arrow keys
+- **Select / deselect** images manually from the gallery or the compare modal
+- **Folder sidebar** for multi-folder inputs with live selection counters
+- **Export** selected images to `results/` or download as a zip archive
+
+No build step — frontend uses Tailwind CSS, HTMX, and Alpine.js via CDN.
+
+### CLI
+
+```bash
+source venv/bin/activate
 python character_sniper.py --report
 ```
 
-### Custom paths
+Custom paths:
 
 ```bash
 python character_sniper.py \
   --original /path/to/reference.png \
   --input /path/to/generated/ \
   --output /path/to/results/ \
+  --top-k 5 \
   --report
 ```
 
-### All options
+All options:
 
-```
---original          Path to reference image (default: data/original.png)
---input             Folder with generated images (default: data/output/)
---output            Folder for selected images (default: results/)
---top-k             Best images to select per folder (default: 5)
---method            Scoring: face | clip | combined (default: combined)
---face-weight       Weight for face similarity (default: 0.7)
---clip-weight       Weight for CLIP similarity (default: 0.3)
---clip-mode         CLIP compares: crop | full (default: crop)
---crop-expand       Expand face bbox for CLIP crop (default: 1.5x)
---min-face-score    Min detection confidence to accept (default: 0.5)
---min-similarity    Min face cosine similarity to keep (default: 0, disabled)
---report            Write CSV report with all scores
---clip-model        OpenCLIP model name (default: ViT-B-32)
---clip-pretrained   OpenCLIP weights (default: laion2b_s34b_b79k)
-```
+| Flag | Description | Default |
+|------|-------------|---------|
+| `--original` | Path to reference image | `data/original.png` |
+| `--input` | Folder with generated images | `data/output/` |
+| `--output` | Folder for selected images | `results/` |
+| `--top-k` | Best images to select per folder | `5` |
+| `--method` | Scoring: `face`, `clip`, `combined` | `combined` |
+| `--face-weight` | Weight for face similarity | `0.7` |
+| `--clip-weight` | Weight for CLIP similarity | `0.3` |
+| `--clip-mode` | CLIP compares: `crop` or `full` | `crop` |
+| `--crop-expand` | Expand face bbox for CLIP crop | `1.5` |
+| `--min-face-score` | Min detection confidence | `0.5` |
+| `--min-similarity` | Min face cosine similarity | `0` (disabled) |
+| `--report` | Write CSV report with all scores | off |
+| `--clip-model` | OpenCLIP model name | `ViT-B-32` |
+| `--clip-pretrained` | OpenCLIP weights | `laion2b_s34b_b79k` |
 
 ## Output
 
-Selected images are copied to the `--output` folder (default: `results/`). In recursive mode, the subfolder structure is preserved.
+Selected images are copied to `results/`. In recursive mode, the subfolder structure is preserved.
 
-With `--report`, a `report.csv` is generated containing scores for every processed image:
+With `--report`, a `report.csv` is generated with scores for every processed image:
 
 | folder | filename | face_score | clip_score | final_score | det_score | reject_reason | selected |
 |--------|----------|------------|------------|-------------|-----------|---------------|----------|
@@ -145,7 +168,19 @@ With `--report`, a `report.csv` is generated containing scores for every process
 | macOS M3 Max (CoreML + MPS) | ~17 img/s | ~10 min |
 | Windows RTX 5080 (CUDA) | ~20+ img/s | ~8 min |
 
-First run includes a one-time model download (~900MB).
+## Project structure
+
+```
+character_sniper.py    Core engine: FaceAnalyzer, CLIPEncoder, scoring, CLI
+server.py              FastAPI web server, SSE progress, gallery endpoints
+requirements.txt       Python dependencies
+templates/
+  base.html            Layout: Tailwind CSS, HTMX 2.0, Alpine.js (CDN)
+  index.html           Main page: settings, progress, compare modal
+  results.html         Results partial: filter bar, folder sidebar, image grid
+data/                  User data (gitignored)
+results/               Output (gitignored)
+```
 
 ## License
 
