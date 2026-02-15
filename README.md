@@ -95,6 +95,7 @@ Features:
 - **Select / deselect** images manually from the gallery or the compare modal
 - **Folder sidebar** for multi-folder inputs with live selection counters
 - **Export** selected images to `results/` or download as a zip archive
+- **Session persistence** — settings, results, and selections survive page reloads and server restarts (SQLite)
 
 No build step — frontend uses Tailwind CSS, HTMX, and Alpine.js via CDN.
 
@@ -173,12 +174,14 @@ With `--report`, a `report.csv` is generated with scores for every processed ima
 ```
 character_sniper.py    Core engine: FaceAnalyzer, CLIPEncoder, scoring, CLI
 server.py              FastAPI web server, SSE progress, gallery endpoints
+session_store.py       SQLite session persistence (settings, jobs, results)
 requirements.txt       Python dependencies
 templates/
   base.html            Layout: Tailwind CSS, HTMX 2.0, Alpine.js (CDN)
   index.html           Main page: settings, progress, compare modal
   results.html         Results partial: filter bar, folder sidebar, image grid
 data/                  User data (gitignored)
+  sessions.db          Auto-created SQLite database for session state
 results/               Output (gitignored)
 ```
 

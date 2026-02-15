@@ -45,8 +45,9 @@ ruff format .
 ## Directory Structure
 
 ```
-character_sniper.py   # Core engine: FaceAnalyzer, CLIPEncoder, scoring, CLI (679 lines)
-server.py             # FastAPI web server, SSE progress, gallery endpoints (667 lines)
+character_sniper.py   # Core engine: FaceAnalyzer, CLIPEncoder, scoring, CLI
+server.py             # FastAPI web server, SSE progress, gallery endpoints
+session_store.py      # SQLite session persistence (settings, jobs, results)
 requirements.txt      # Python dependencies
 templates/
   base.html           # Layout: Tailwind CSS, HTMX 2.0, Alpine.js 3.15 (all via CDN)
@@ -55,6 +56,7 @@ templates/
 data/                 # User data (gitignored)
   original.png        # Reference face image
   output/             # Generated images to analyze
+  sessions.db         # SQLite database for session persistence (auto-created)
 results/              # Output (gitignored): selected images + report.csv
 ```
 
@@ -172,6 +174,38 @@ class ImageScore:
 - `process_folder()` — scores all images in a folder, accepts `ProgressCallback`
 - `prepare_original()` — extracts reference face + CLIP embeddings from original image
 - `discover_folders()` / `detect_mode()` — auto-detects flat vs recursive input structure
+- `SessionStore` — SQLite-backed persistence for web UI sessions (settings, jobs, results)
+
+## Session Persistence
+
+The web UI persists state to `data/sessions.db` (SQLite, WAL mode) so that page reloads
+and server restarts do not lose work. Zero external dependencies — uses Python's `sqlite3`.
+
+### What is persisted
+
+| Data | When saved | Storage |
+|------|-----------|---------|
+| User settings (paths, weights, top-K) | On each job start | `settings` table (singleton row) |
+| Completed jobs + all scoring results | When job finishes | `jobs` + `job_results` tables |
+| Image selection changes (select/deselect) | On each toggle | `job_results.selected` column |
+
+### Session restore flow
+
+1. **Server startup** (`lifespan`): loads latest completed job from SQLite into in-memory `jobs` dict
+2. **Page load** (`Alpine.js init()`): `GET /api/settings` fills form, `GET /api/jobs/latest` triggers HTMX load of results
+3. **Invalidation**: if input folder mtime is newer than job creation time, results are considered stale and not restored
+
+### API endpoints (session)
+
+- `GET /api/settings` — return saved user settings (or defaults)
+- `POST /api/settings` — save user settings as JSON body
+- `GET /api/jobs/latest` — return latest valid job ID for auto-restore
+
+### Schema (3 tables)
+
+- `settings` — singleton row (id=1) with form field values
+- `jobs` — completed/errored jobs with params and metadata
+- `job_results` — per-image scoring data with `UNIQUE(job_id, folder, filename)`, CASCADE delete
 
 ## Scoring Formula
 
