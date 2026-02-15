@@ -418,7 +418,7 @@ def process_folder(
 
     # select top-k
     scorable = [r for r in results if r.final_score is not None]
-    scorable.sort(key=lambda r: (r.final_score or 0), reverse=True)
+    scorable.sort(key=lambda r: r.final_score or 0, reverse=True)
     for r in scorable[:top_k]:
         r.selected = True
 
@@ -623,8 +623,8 @@ def main():
             total=len(images), desc=f"  [{folder_name}]", unit="img", leave=False
         )
 
-        def cli_progress(current, total, filename):
-            pbar.update(1)
+        def cli_progress(current, total, filename, _pbar=pbar):
+            _pbar.update(1)
 
         results = process_folder(
             image_paths=images,
@@ -652,7 +652,7 @@ def main():
         total_processed += len(images)
 
         top = [r for r in results if r.selected]
-        top.sort(key=lambda r: (r.final_score or 0), reverse=True)
+        top.sort(key=lambda r: r.final_score or 0, reverse=True)
         if top:
             tqdm.write(
                 f"  [{folder_name}] {len(images)} imgs -> "

@@ -349,13 +349,13 @@ async def start_job(request: Request):
         }
     )
 
-    # Validate paths
-    if not Path(original_path).exists():
+    # Validate paths (run blocking I/O off the event loop)
+    if not await asyncio.to_thread(Path(original_path).exists):
         return HTMLResponse(
             f'<div class="text-red-400 p-4">Original image not found: {original_path}</div>',
             status_code=400,
         )
-    if not Path(input_path).exists():
+    if not await asyncio.to_thread(Path(input_path).exists):
         return HTMLResponse(
             f'<div class="text-red-400 p-4">Input folder not found: {input_path}</div>',
             status_code=400,
@@ -764,14 +764,13 @@ async def export_download_job(job_id: str):
     )
 
 
-@app.get("/api/browse")
-async def browse_path(path: str = "."):
-    """Return directory listing as JSON for folder picker."""
+def _list_directory(path: str) -> dict:
+    """Sync helper: resolve path and list directory entries."""
     p = Path(path).expanduser().resolve()
     if not p.exists():
-        return JSONResponse({"error": "Path not found", "entries": []})
+        return {"error": "Path not found", "path": str(p), "entries": []}
     if not p.is_dir():
-        return JSONResponse({"error": "Not a directory", "entries": []})
+        return {"error": "Not a directory", "path": str(p), "entries": []}
 
     entries = []
     try:
@@ -789,9 +788,16 @@ async def browse_path(path: str = "."):
                 }
             )
     except PermissionError:
-        return JSONResponse({"error": "Permission denied", "entries": []})
+        return {"error": "Permission denied", "path": str(p), "entries": []}
 
-    return JSONResponse({"path": str(p), "entries": entries})
+    return {"path": str(p), "entries": entries}
+
+
+@app.get("/api/browse")
+async def browse_path(path: str = "."):
+    """Return directory listing as JSON for folder picker."""
+    result = await asyncio.to_thread(_list_directory, path)
+    return JSONResponse(result)
 
 
 # ---------------------------------------------------------------------------
@@ -815,7 +821,7 @@ async def serve_original(job_id: str):
     if not _ensure_job_in_memory(job_id):
         return JSONResponse({"error": "Job not found"}, 404)
     path = Path(jobs[job_id]["original_path"])
-    if not path.exists():
+    if not await asyncio.to_thread(path.exists):
         return JSONResponse({"error": "File not found"}, 404)
     return FileResponse(path)
 
@@ -826,7 +832,7 @@ async def serve_image_flat(job_id: str, filename: str):
     if not _ensure_job_in_memory(job_id):
         return JSONResponse({"error": "Job not found"}, 404)
     file_path = Path(jobs[job_id]["input_path"]) / filename
-    if not file_path.exists():
+    if not await asyncio.to_thread(file_path.exists):
         return JSONResponse({"error": "File not found"}, 404)
     return FileResponse(file_path)
 
@@ -840,7 +846,7 @@ async def serve_image(job_id: str, folder: str, filename: str):
     input_path = Path(job["input_path"])
     file_path = input_path / folder / filename
 
-    if not file_path.exists():
+    if not await asyncio.to_thread(file_path.exists):
         return JSONResponse({"error": "File not found"}, 404)
 
     return FileResponse(file_path)
