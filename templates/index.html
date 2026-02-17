@@ -48,17 +48,37 @@
                         <h2 class="text-sm font-semibold text-gray-400 uppercase tracking-wider">Input</h2>
                         <div>
                             <label class="block text-sm text-gray-300 mb-1">Original Image</label>
-                            <input type="text" name="original_path" x-model="originalPath"
-                                   class="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white
-                                          focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
-                                   placeholder="/path/to/original.png" />
+                            <input type="hidden" name="original_path" x-model="originalPath" />
+                            <div class="flex gap-2">
+                                <div class="flex-1 bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white truncate"
+                                     :title="originalPath" x-text="originalPath || 'No file selected'"></div>
+                                <button type="button" @click="openBrowser('file', 'original')"
+                                        class="px-3 py-2 bg-gray-600 hover:bg-gray-500 text-white text-sm rounded-lg
+                                               transition-colors flex items-center gap-1.5 shrink-0">
+                                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                              d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
+                                    </svg>
+                                    Browse
+                                </button>
+                            </div>
                         </div>
                         <div>
                             <label class="block text-sm text-gray-300 mb-1">Input Folder</label>
-                            <input type="text" name="input_path" x-model="inputPath"
-                                   class="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white
-                                          focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
-                                   placeholder="/path/to/images" />
+                            <input type="hidden" name="input_path" x-model="inputPath" />
+                            <div class="flex gap-2">
+                                <div class="flex-1 bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white truncate"
+                                     :title="inputPath" x-text="inputPath || 'No folder selected'"></div>
+                                <button type="button" @click="openBrowser('directory', 'input')"
+                                        class="px-3 py-2 bg-gray-600 hover:bg-gray-500 text-white text-sm rounded-lg
+                                               transition-colors flex items-center gap-1.5 shrink-0">
+                                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                              d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
+                                    </svg>
+                                    Browse
+                                </button>
+                            </div>
                         </div>
                         <div>
                             <label class="block text-sm text-gray-300 mb-1">Top-K (per folder)</label>
@@ -137,10 +157,10 @@
          x-transition:leave-start="opacity-100" x-transition:leave-end="opacity-0"
          class="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm"
          style="display: none;"
-         @keydown.escape.window="if (settingsOpen) settingsOpen = false">
+         @keydown.escape.window="if (settingsOpen && !browserOpen) settingsOpen = false">
 
         <div class="bg-gray-800 rounded-xl shadow-2xl border border-gray-700 w-full max-w-2xl mx-4"
-             @click.outside="settingsOpen = false">
+             @click.outside="if (!browserOpen) settingsOpen = false">
 
             <!-- Header -->
             <div class="flex items-center justify-between px-5 py-3 border-b border-gray-700">
@@ -164,15 +184,37 @@
                         <h2 class="text-xs font-semibold text-gray-500 uppercase tracking-wider">Input</h2>
                         <div>
                             <label class="block text-xs text-gray-400 mb-1">Original Image</label>
-                            <input type="text" name="original_path" x-model="originalPath"
-                                   class="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-1.5 text-sm text-white
-                                          focus:outline-none focus:ring-2 focus:ring-indigo-500" />
+                            <input type="hidden" name="original_path" x-model="originalPath" />
+                            <div class="flex gap-2">
+                                <div class="flex-1 bg-gray-700 border border-gray-600 rounded-lg px-3 py-1.5 text-sm text-white truncate"
+                                     :title="originalPath" x-text="originalPath || 'No file selected'"></div>
+                                <button type="button" @click="openBrowser('file', 'original')"
+                                        class="px-2.5 py-1.5 bg-gray-600 hover:bg-gray-500 text-white text-xs rounded-lg
+                                               transition-colors flex items-center gap-1 shrink-0">
+                                    <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                              d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
+                                    </svg>
+                                    Browse
+                                </button>
+                            </div>
                         </div>
                         <div>
                             <label class="block text-xs text-gray-400 mb-1">Input Folder</label>
-                            <input type="text" name="input_path" x-model="inputPath"
-                                   class="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-1.5 text-sm text-white
-                                          focus:outline-none focus:ring-2 focus:ring-indigo-500" />
+                            <input type="hidden" name="input_path" x-model="inputPath" />
+                            <div class="flex gap-2">
+                                <div class="flex-1 bg-gray-700 border border-gray-600 rounded-lg px-3 py-1.5 text-sm text-white truncate"
+                                     :title="inputPath" x-text="inputPath || 'No folder selected'"></div>
+                                <button type="button" @click="openBrowser('directory', 'input')"
+                                        class="px-2.5 py-1.5 bg-gray-600 hover:bg-gray-500 text-white text-xs rounded-lg
+                                               transition-colors flex items-center gap-1 shrink-0">
+                                    <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                              d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
+                                    </svg>
+                                    Browse
+                                </button>
+                            </div>
                         </div>
                         <div>
                             <label class="block text-xs text-gray-400 mb-1">Top-K (per folder)</label>
@@ -312,6 +354,139 @@
             </div>
         </div>
     </div>
+
+    <!-- File Browser modal -->
+    <div x-show="browserOpen" x-transition:enter="transition ease-out duration-200"
+         x-transition:enter-start="opacity-0" x-transition:enter-end="opacity-100"
+         x-transition:leave="transition ease-in duration-150"
+         x-transition:leave-start="opacity-100" x-transition:leave-end="opacity-0"
+         class="fixed inset-0 z-[60] flex items-center justify-center bg-black/70 backdrop-blur-sm"
+         style="display: none;"
+         @keydown.escape.window="if (browserOpen) browserCancel()">
+
+        <div class="bg-gray-800 rounded-xl shadow-2xl border border-gray-700 w-full max-w-2xl mx-4 flex flex-col"
+             style="max-height: calc(100vh - 4rem);"
+             @click.stop
+             @click.outside="browserCancel()">
+
+            <!-- Header -->
+            <div class="flex items-center justify-between px-4 py-3 border-b border-gray-700 shrink-0">
+                <div class="flex items-center gap-2">
+                    <svg class="w-5 h-5 text-indigo-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                              d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
+                    </svg>
+                    <h3 class="text-lg font-semibold text-white" x-text="browserMode === 'file' ? 'Select File' : 'Select Folder'"></h3>
+                </div>
+                <button @click="browserCancel()"
+                        class="p-1.5 rounded-lg hover:bg-gray-700 text-gray-400 hover:text-white transition-colors">
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+                    </svg>
+                </button>
+            </div>
+
+            <!-- Breadcrumbs / Path bar -->
+            <div class="px-4 py-2 border-b border-gray-700 bg-gray-900/50 shrink-0">
+                <div class="flex items-center gap-1 text-sm overflow-x-auto">
+                    <!-- Root button: only show on Unix (path starts with /) -->
+                    <button x-show="browserPath && browserPath.startsWith('/')"
+                            @click="browseTo('/')"
+                            class="text-gray-400 hover:text-white px-1.5 py-0.5 rounded hover:bg-gray-700 shrink-0">/</button>
+                    <template x-for="(crumb, idx) in browserBreadcrumbs" :key="crumb.path">
+                        <div class="flex items-center gap-1 shrink-0">
+                            <span x-show="idx > 0 || browserPath.startsWith('/')" class="text-gray-600" x-text="_pathSep(browserPath)"></span>
+                            <button @click="browseTo(crumb.path)"
+                                    class="text-gray-300 hover:text-white px-1.5 py-0.5 rounded hover:bg-gray-700 truncate max-w-[150px]"
+                                    :title="crumb.name" x-text="crumb.name"></button>
+                        </div>
+                    </template>
+                </div>
+            </div>
+
+            <!-- Directory listing -->
+            <div class="flex-1 overflow-y-auto min-h-0">
+                <!-- Loading -->
+                <div x-show="browserLoading" class="flex items-center justify-center py-8">
+                    <div class="animate-spin h-6 w-6 border-2 border-indigo-400 border-t-transparent rounded-full"></div>
+                </div>
+
+                <!-- Error -->
+                <div x-show="browserError && !browserLoading" class="p-4 text-red-400 text-sm" x-text="browserError"></div>
+
+                <!-- Entries -->
+                <div x-show="!browserLoading && !browserError" class="divide-y divide-gray-700/50">
+                    <!-- Go up -->
+                    <button @click="browserGoUp()"
+                            class="w-full flex items-center gap-3 px-4 py-2.5 hover:bg-gray-700/50 transition-colors text-left">
+                        <svg class="w-5 h-5 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 17l-5-5m0 0l5-5m-5 5h12" />
+                        </svg>
+                        <span class="text-gray-400 text-sm">..</span>
+                    </button>
+
+                    <!-- Directory/File entries -->
+                    <template x-for="entry in browserEntries" :key="entry.path">
+                        <button @click="browserSelect(entry)"
+                                class="w-full flex items-center gap-3 px-4 py-2.5 hover:bg-gray-700/50 transition-colors text-left group"
+                                :class="{'opacity-50': browserMode === 'directory' && !entry.is_dir}">
+                            <!-- Icon -->
+                            <template x-if="entry.is_dir">
+                                <svg class="w-5 h-5 text-yellow-500" fill="currentColor" viewBox="0 0 24 24">
+                                    <path d="M10 4H4a2 2 0 00-2 2v12a2 2 0 002 2h16a2 2 0 002-2V8a2 2 0 00-2-2h-8l-2-2z" />
+                                </svg>
+                            </template>
+                            <template x-if="!entry.is_dir && entry.is_image">
+                                <svg class="w-5 h-5 text-green-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                          d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                                </svg>
+                            </template>
+                            <template x-if="!entry.is_dir && !entry.is_image">
+                                <svg class="w-5 h-5 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                          d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z" />
+                                </svg>
+                            </template>
+                            <!-- Name -->
+                            <span class="text-sm text-gray-200 truncate" x-text="entry.name"></span>
+                            <!-- Select hint for files in file mode -->
+                            <span x-show="browserMode === 'file' && !entry.is_dir"
+                                  class="ml-auto text-xs text-indigo-400 opacity-0 group-hover:opacity-100 transition-opacity">
+                                Click to select
+                            </span>
+                        </button>
+                    </template>
+
+                    <!-- Empty state -->
+                    <div x-show="browserEntries.length === 0 && !browserLoading && !browserError"
+                         class="py-8 text-center text-gray-500 text-sm">
+                        Empty directory
+                    </div>
+                </div>
+            </div>
+
+            <!-- Footer -->
+            <div class="px-4 py-3 border-t border-gray-700 bg-gray-900/30 flex items-center justify-between shrink-0">
+                <div class="text-xs text-gray-500 truncate max-w-[60%]" x-text="browserPath"></div>
+                <div class="flex items-center gap-2">
+                    <button x-show="browserMode === 'directory'"
+                            @click="browserSelectCurrent()"
+                            class="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-medium rounded-lg
+                                   transition-colors flex items-center gap-2">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" />
+                        </svg>
+                        Select This Folder
+                    </button>
+                    <button @click="browserCancel()"
+                            class="px-4 py-2 text-sm font-medium text-gray-400 hover:text-white transition-colors">
+                        Cancel
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
 </div>
 
 <script>
@@ -327,6 +502,15 @@ function app() {
         hasResults: false,
         processingStarted: false,
         settingsOpen: false,
+
+        // File browser state
+        browserOpen: false,
+        browserMode: 'file',  // 'file' or 'directory'
+        browserTarget: '',    // 'original' or 'input'
+        browserPath: '',      // current browsing path
+        browserEntries: [],   // [{name, path, is_dir, is_image}, ...]
+        browserLoading: false,
+        browserError: '',
 
         // Session restore
         restoredJobId: null,
@@ -524,6 +708,131 @@ function app() {
                     final_score: el.dataset.compareFinal,
                     cardId: el.id,
                 });
+            });
+        },
+
+        // ── File Browser ─────────────────────────────────────────────
+        // Helper: get parent directory (cross-platform)
+        _parentDir(path) {
+            if (!path) return '.';
+            // Handle both / and \ separators
+            const lastSlash = Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'));
+            if (lastSlash <= 0) return path.length <= 3 ? path : '.';  // Root or drive letter
+            return path.substring(0, lastSlash) || '.';
+        },
+
+        // Helper: split path into parts (cross-platform)
+        _splitPath(path) {
+            if (!path) return [];
+            // Split on both / and \, filter empties
+            return path.split(/[/\\]/).filter(p => p);
+        },
+
+        // Helper: detect path separator from a path
+        _pathSep(path) {
+            if (!path) return '/';
+            return path.includes('\\') ? '\\' : '/';
+        },
+
+        openBrowser(mode, target) {
+            this.browserMode = mode;  // 'file' or 'directory'
+            this.browserTarget = target;  // 'original' or 'input'
+            this.browserError = '';
+            this.browserOpen = true;
+
+            // Start from current value's directory or home
+            let startPath = target === 'original' ? this.originalPath : this.inputPath;
+            if (startPath) {
+                // Go to parent directory if it's a file path
+                if (mode === 'file') {
+                    startPath = this._parentDir(startPath);
+                }
+            } else {
+                startPath = '.';
+            }
+            this.browseTo(startPath);
+        },
+
+        async browseTo(path) {
+            this.browserLoading = true;
+            this.browserError = '';
+            try {
+                const resp = await fetch('/api/browse?path=' + encodeURIComponent(path));
+                const data = await resp.json();
+                if (data.error) {
+                    this.browserError = data.error;
+                    this.browserEntries = [];
+                } else {
+                    this.browserPath = data.path;
+                    this.browserEntries = data.entries;
+                }
+            } catch (e) {
+                this.browserError = 'Failed to load directory';
+                this.browserEntries = [];
+            }
+            this.browserLoading = false;
+        },
+
+        browserGoUp() {
+            if (!this.browserPath) return;
+            const parent = this._parentDir(this.browserPath);
+            if (parent !== this.browserPath) {
+                this.browseTo(parent);
+            }
+        },
+
+        browserSelect(entry) {
+            if (entry.is_dir) {
+                if (this.browserMode === 'directory') {
+                    // In directory mode, clicking a dir enters it (use Select button to choose)
+                    this.browseTo(entry.path);
+                } else {
+                    // In file mode, enter the directory
+                    this.browseTo(entry.path);
+                }
+            } else {
+                // It's a file - select it (only in file mode)
+                if (this.browserMode === 'file') {
+                    this.browserConfirm(entry.path);
+                }
+            }
+        },
+
+        browserSelectCurrent() {
+            // Select current directory (for directory mode)
+            if (this.browserMode === 'directory' && this.browserPath) {
+                this.browserConfirm(this.browserPath);
+            }
+        },
+
+        browserConfirm(path) {
+            if (this.browserTarget === 'original') {
+                this.originalPath = path;
+            } else if (this.browserTarget === 'input') {
+                this.inputPath = path;
+            }
+            this.browserOpen = false;
+        },
+
+        browserCancel() {
+            this.browserOpen = false;
+        },
+
+        // Get breadcrumb parts from path (cross-platform)
+        get browserBreadcrumbs() {
+            if (!this.browserPath) return [];
+            const parts = this._splitPath(this.browserPath);
+            const sep = this._pathSep(this.browserPath);
+            const isWindows = sep === '\\';
+            let cumulative = isWindows ? '' : '';
+            return parts.map((part, idx) => {
+                if (isWindows && idx === 0) {
+                    // First part on Windows is drive letter (e.g., "C:")
+                    cumulative = part;
+                } else {
+                    cumulative += sep + part;
+                }
+                return { name: part, path: cumulative };
             });
         },
     }
