@@ -172,9 +172,36 @@ class ImageScore:
 - `CLIPEncoder` / `DummyCLIP` — wraps OpenCLIP ViT-B-32; `DummyCLIP` is a no-op fallback
 - `ImageScore` — dataclass for per-image similarity results
 - `process_folder()` — scores all images in a folder, accepts `ProgressCallback`
+- `process_folders_parallel()` — parallel folder processing with configurable workers
 - `prepare_original()` — extracts reference face + CLIP embeddings from original image
 - `discover_folders()` / `detect_mode()` — auto-detects flat vs recursive input structure
 - `SessionStore` — SQLite-backed persistence for web UI sessions (settings, jobs, results)
+
+## Parallel Processing
+
+The `process_folders_parallel()` function enables multi-worker parallel processing:
+
+```python
+process_folders_parallel(
+    folders, image_lists, folder_names, original_path,
+    workers=4,  # Number of parallel workers
+    on_progress=callback,  # Per-image progress
+    on_folder_done=callback,  # Per-folder completion
+)
+```
+
+**Architecture:**
+- Uses `ProcessPoolExecutor` with spawn context (safe for CUDA/MPS)
+- Each worker initializes its own model copies (can't pickle ONNX/PyTorch)
+- Progress reported via `multiprocessing.Queue`
+- Intra-op threads limited per worker to avoid CPU contention
+
+**Worker count logic (`get_default_workers()`):**
+- GPU (CUDA/MPS): 1 worker (avoids VRAM contention)
+- CPU: `cpu_count / 2` workers
+
+**CLI:** `--workers N` (0=auto, 1=sequential, N=parallel)
+**Web UI:** Workers field in settings form
 
 ## Session Persistence
 
@@ -185,7 +212,7 @@ and server restarts do not lose work. Zero external dependencies — uses Python
 
 | Data | When saved | Storage |
 |------|-----------|---------|
-| User settings (paths, weights, top-K) | On each job start | `settings` table (singleton row) |
+| User settings (paths, weights, top-K, workers) | On each job start | `settings` table (singleton row) |
 | Completed jobs + all scoring results | When job finishes | `jobs` + `job_results` tables |
 | Image selection changes (select/deselect) | On each toggle | `job_results.selected` column |
 

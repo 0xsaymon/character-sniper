@@ -92,10 +92,12 @@ Open [http://127.0.0.1:8000](http://127.0.0.1:8000). Configure paths and scoring
 
 Features:
 - **Real-time progress** via Server-Sent Events
+- **Parallel processing** — configurable worker count in settings
 - **Filter** results by status — all, selected, scored, rejected
 - **Compare** any image side-by-side with the original, navigate with arrow keys
 - **Select / deselect** images manually from the gallery or the compare modal
 - **Folder sidebar** for multi-folder inputs with live selection counters
+- **File browser** — select original image and input folder via built-in file picker
 - **Export** selected images to `results/` or download as a zip archive
 - **Session persistence** — settings, results, and selections survive page reloads and server restarts (SQLite)
 
@@ -127,6 +129,7 @@ All options:
 | `--input` | Folder with generated images | `data/output/` |
 | `--output` | Folder for selected images | `results/` |
 | `--top-k` | Best images to select per folder | `5` |
+| `--workers` | Parallel workers (0=auto, 1=sequential) | `0` (auto) |
 | `--method` | Scoring: `face`, `clip`, `combined` | `combined` |
 | `--face-weight` | Weight for face similarity | `0.7` |
 | `--clip-weight` | Weight for CLIP similarity | `0.3` |
@@ -166,10 +169,43 @@ With `--report`, a `report.csv` is generated with scores for every processed ima
 
 ## Performance
 
+Single worker (sequential):
+
 | Platform | Speed | 10,000 images |
 |----------|-------|---------------|
 | macOS M3 Max (CoreML + MPS) | ~17 img/s | ~10 min |
 | Windows RTX 5080 (CUDA) | ~20+ img/s | ~8 min |
+
+### Parallel processing
+
+For large datasets (10K+ images across many folders), use multiple workers:
+
+```bash
+# Auto-detect optimal worker count
+python character_sniper.py --report
+
+# Explicit: 4 parallel workers
+python character_sniper.py --workers 4 --report
+```
+
+**How it works:**
+- Each worker runs in a separate process with its own model copies
+- Folders are distributed evenly across workers
+- Progress is aggregated from all workers in real-time
+
+**Auto-detection (`--workers 0`):**
+- **GPU (CUDA/MPS):** 1 worker (avoids VRAM contention)
+- **CPU:** `cpu_count / 2` workers
+
+**VRAM requirements per worker:** ~1.1 GB (InsightFace 600MB + CLIP 350MB + overhead)
+
+| GPU VRAM | Safe worker count |
+|----------|-------------------|
+| 8 GB | 2-4 workers |
+| 16 GB | 4-6 workers |
+| 24 GB | 6-10 workers |
+
+**Expected speedup:** 3-5x with 4 workers on a multi-folder dataset.
 
 ## Project structure
 
