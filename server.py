@@ -53,9 +53,31 @@ from session_store import SessionStore
 store = SessionStore()
 
 
+def _print_device_info() -> None:
+    """Print diagnostic info about available compute devices."""
+    import torch
+    import onnxruntime as ort
+
+    print("[device] PyTorch:")
+    print(f"         CUDA available: {torch.cuda.is_available()}")
+    if torch.cuda.is_available():
+        print(f"         CUDA device: {torch.cuda.get_device_name(0)}")
+    print(
+        f"         MPS available: {getattr(torch.backends, 'mps', None) and torch.backends.mps.is_available()}"
+    )
+
+    print("[device] ONNX Runtime:")
+    print(f"         Available providers: {ort.get_available_providers()}")
+
+    from character_sniper import get_default_workers
+
+    print(f"[device] Default workers: {get_default_workers()}")
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
     """Restore latest completed job from SQLite on startup."""
+    _print_device_info()
     latest = store.load_latest_job()
     if latest and store.is_job_valid(latest["id"]):
         _restore_job_from_db(latest)
