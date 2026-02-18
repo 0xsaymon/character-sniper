@@ -30,3 +30,4 @@ Thumbs.db
 # Models cache (downloaded at runtime)
 *.onnx
 *.safetensors
+.coverage

@@ -641,8 +641,11 @@ def process_folders_parallel(
         batches.append(folder_data[i : i + batch_size])
 
     # Create progress queue for cross-process communication
+    # Use Manager().Queue() instead of mp.Queue() because it can be pickled
+    # and passed to ProcessPoolExecutor workers (required on Windows)
     ctx = mp.get_context("spawn")  # spawn is safer for CUDA/MPS
-    progress_queue: mp.Queue = ctx.Queue()
+    manager = ctx.Manager()
+    progress_queue = manager.Queue()
 
     all_results: list[ImageScore] = []
 
