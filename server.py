@@ -31,12 +31,11 @@ from character_sniper import (
     FaceAnalyzer,
     CLIPEncoder,
     DummyCLIP,
-    ImageScore,
     discover_folders,
     list_images,
     normalise_weights,
-    prepare_original,
-    process_folder,
+    process_folders_parallel,
+    get_default_workers,
     write_csv,
     copy_selected,
     IMAGE_EXTENSIONS,
@@ -174,71 +173,64 @@ async def run_job(job_id: str):
         params = job["params"]
         face_w = params["face_weight"]
         clip_w = params["clip_weight"]
+        workers = params.get("workers", 1)
 
-        # Load models in thread
-        face_analyzer, clip_encoder = await asyncio.to_thread(load_models, clip_w)
-
-        # Prepare original embeddings
-        original_path = Path(job["original_path"])
-        orig_face_emb, orig_clip_emb = await asyncio.to_thread(
-            prepare_original,
-            original_path,
-            face_analyzer,
-            clip_encoder,
-        )
-
-        # Discover folders
+        # Discover folders first
         input_dir = Path(job["input_path"])
         is_recursive, folders = await asyncio.to_thread(discover_folders, input_dir)
         job["is_recursive"] = is_recursive
 
-        # Count total images
-        all_image_lists: list[tuple[Path, list[Path]]] = []
+        # Build folder data
+        folder_paths: list[Path] = []
+        folder_names: list[str] = []
+        image_lists: list[list[Path]] = []
         total_images = 0
+
         for folder in folders:
             imgs = list_images(folder)
             if imgs:
-                all_image_lists.append((folder, imgs))
+                folder_paths.append(folder)
+                folder_names.append(folder.name if is_recursive else ".")
+                image_lists.append(imgs)
                 total_images += len(imgs)
 
-        job["folders_total"] = len(all_image_lists)
+        job["folders_total"] = len(folder_paths)
         job["images_total"] = total_images
         job["status"] = "running"
 
-        all_results: list[ImageScore] = []
+        # Progress callbacks
+        def on_progress(current: int, total: int, filename: str):
+            job["images_done"] += 1
+            job["current_file"] = filename
+            if job["images_total"] > 0:
+                job["progress"] = int(job["images_done"] / job["images_total"] * 100)
 
-        for folder_idx, (folder, images) in enumerate(all_image_lists):
-            folder_name = folder.name if is_recursive else "."
+        def on_folder_done(folder_name: str, n_images: int, n_sel: int, n_rej: int):
+            job["folders_done"] += 1
             job["current_folder"] = folder_name
 
-            def on_progress(current: int, total: int, filename: str):
-                job["images_done"] += 1
-                job["current_file"] = filename
-                if job["images_total"] > 0:
-                    job["progress"] = int(
-                        job["images_done"] / job["images_total"] * 100
-                    )
+        # Process all folders (parallel or sequential depending on workers)
+        original_path = Path(job["original_path"])
 
-            results = await asyncio.to_thread(
-                process_folder,
-                image_paths=images,
-                folder_name=folder_name,
-                face_analyzer=face_analyzer,
-                clip_encoder=clip_encoder,
-                orig_face_emb=orig_face_emb,
-                orig_clip_emb=orig_clip_emb,
-                face_weight=face_w,
-                clip_weight=clip_w,
-                min_face_score=params["min_face_score"],
-                top_k=params["top_k"],
-                on_progress=on_progress,
-            )
+        all_results = await asyncio.to_thread(
+            process_folders_parallel,
+            folder_paths,
+            image_lists,
+            folder_names,
+            original_path,
+            face_weight=face_w,
+            clip_weight=clip_w,
+            min_face_score=params["min_face_score"],
+            top_k=params["top_k"],
+            workers=workers,
+            on_progress=on_progress,
+            on_folder_done=on_folder_done,
+        )
 
-            # Store results as dicts for JSON/HTML
-            job["results"][folder_name] = [r.to_dict() for r in results]
-            all_results.extend(results)
-
-            job["folders_done"] = folder_idx + 1
+        # Group results by folder for storage
+        for folder_name in folder_names:
+            folder_results = [r for r in all_results if r.folder == folder_name]
+            job["results"][folder_name] = [r.to_dict() for r in folder_results]
 
         job["all_results"] = all_results
         job["progress"] = 100
@@ -289,6 +281,7 @@ async def save_settings(request: Request):
             "face_weight": float(data.get("face_weight", 0.7)),
             "clip_weight": float(data.get("clip_weight", 0.3)),
             "min_face_score": float(data.get("min_face_score", 0.5)),
+            "workers": int(data.get("workers", 1)),
         }
     )
     return JSONResponse({"ok": True})
@@ -333,6 +326,11 @@ async def start_job(request: Request):
     face_weight = float(form.get("face_weight", 0.7))
     clip_weight = float(form.get("clip_weight", 0.3))
     min_face_score = float(form.get("min_face_score", 0.5))
+    workers_raw = form.get("workers", 0)
+    workers = int(workers_raw) if workers_raw else 0
+    # 0 = auto-detect, will be resolved in run_job
+    if workers == 0:
+        workers = get_default_workers()
 
     # Normalise weights
     face_w, clip_w = normalise_weights("combined", face_weight, clip_weight)
@@ -346,6 +344,7 @@ async def start_job(request: Request):
             "face_weight": face_weight,
             "clip_weight": clip_weight,
             "min_face_score": min_face_score,
+            "workers": workers,
         }
     )
 
@@ -369,6 +368,7 @@ async def start_job(request: Request):
             "face_weight": face_w,
             "clip_weight": clip_w,
             "min_face_score": min_face_score,
+            "workers": workers,
         },
     )
 

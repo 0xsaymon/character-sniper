@@ -187,6 +187,7 @@ class TestSettingsAPI:
             "face_weight": 0.9,
             "clip_weight": 0.1,
             "min_face_score": 0.3,
+            "workers": 2,
         }
         resp = client.post("/api/settings", json=payload)
         assert resp.status_code == 200
@@ -196,6 +197,7 @@ class TestSettingsAPI:
         data = resp.json()
         assert data["original_path"] == "/custom/ref.png"
         assert data["top_k"] == 10
+        assert data["workers"] == 2
 
 
 class TestLatestJobAPI:

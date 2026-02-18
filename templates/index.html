@@ -80,11 +80,20 @@
                                 </button>
                             </div>
                         </div>
-                        <div>
-                            <label class="block text-sm text-gray-300 mb-1">Top-K (per folder)</label>
-                            <input type="number" name="top_k" x-model.number="topK" min="1" max="100"
-                                   class="w-32 bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white
-                                          focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent" />
+                        <div class="flex gap-4">
+                            <div>
+                                <label class="block text-sm text-gray-300 mb-1">Top-K (per folder)</label>
+                                <input type="number" name="top_k" x-model.number="topK" min="1" max="100"
+                                       class="w-24 bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white
+                                              focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent" />
+                            </div>
+                            <div>
+                                <label class="block text-sm text-gray-300 mb-1">Workers</label>
+                                <input type="number" name="workers" x-model.number="workers" min="1" max="16"
+                                       class="w-20 bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white
+                                              focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+                                       title="Parallel workers (1=sequential, >1=parallel processing)" />
+                            </div>
                         </div>
                     </div>
 
@@ -216,11 +225,20 @@
                                 </button>
                             </div>
                         </div>
-                        <div>
-                            <label class="block text-xs text-gray-400 mb-1">Top-K (per folder)</label>
-                            <input type="number" name="top_k" x-model.number="topK" min="1" max="100"
-                                   class="w-24 bg-gray-700 border border-gray-600 rounded-lg px-3 py-1.5 text-sm text-white
-                                          focus:outline-none focus:ring-2 focus:ring-indigo-500" />
+                        <div class="flex gap-3">
+                            <div>
+                                <label class="block text-xs text-gray-400 mb-1">Top-K</label>
+                                <input type="number" name="top_k" x-model.number="topK" min="1" max="100"
+                                       class="w-20 bg-gray-700 border border-gray-600 rounded-lg px-3 py-1.5 text-sm text-white
+                                              focus:outline-none focus:ring-2 focus:ring-indigo-500" />
+                            </div>
+                            <div>
+                                <label class="block text-xs text-gray-400 mb-1">Workers</label>
+                                <input type="number" name="workers" x-model.number="workers" min="1" max="16"
+                                       class="w-16 bg-gray-700 border border-gray-600 rounded-lg px-3 py-1.5 text-sm text-white
+                                              focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                                       title="Parallel workers" />
+                            </div>
                         </div>
                     </div>
                     <div class="space-y-3">
@@ -499,6 +517,7 @@ function app() {
         faceWeight: 0.7,
         clipWeight: 0.3,
         minFaceScore: 0.5,
+        workers: 1,
         hasResults: false,
         processingStarted: false,
         settingsOpen: false,
@@ -547,6 +566,7 @@ function app() {
                     this.faceWeight = s.face_weight ?? this.faceWeight;
                     this.clipWeight = s.clip_weight ?? this.clipWeight;
                     this.minFaceScore = s.min_face_score ?? this.minFaceScore;
+                    this.workers = s.workers || this.workers;
                 })
                 .catch(() => {});
 

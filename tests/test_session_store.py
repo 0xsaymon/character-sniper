@@ -63,6 +63,7 @@ class TestSettings:
             "face_weight": 0.9,
             "clip_weight": 0.1,
             "min_face_score": 0.3,
+            "workers": 4,
         }
         store.save_settings(custom)
         loaded = store.load_settings()

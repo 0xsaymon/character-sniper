@@ -33,6 +33,7 @@ CREATE TABLE IF NOT EXISTS settings (
     face_weight    REAL    NOT NULL DEFAULT 0.70,
     clip_weight    REAL    NOT NULL DEFAULT 0.30,
     min_face_score REAL    NOT NULL DEFAULT 0.50,
+    workers        INTEGER NOT NULL DEFAULT 1,
     updated_at     TEXT    NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -80,6 +81,7 @@ _DEFAULT_SETTINGS: dict[str, object] = {
     "face_weight": 0.70,
     "clip_weight": 0.30,
     "min_face_score": 0.50,
+    "workers": 1,
 }
 
 
@@ -110,6 +112,13 @@ class SessionStore:
                 "INSERT INTO meta (key, value) VALUES ('schema_version', ?)",
                 (str(_SCHEMA_VERSION),),
             )
+        # Migration: add workers column if it doesn't exist (for existing DBs)
+        try:
+            self._conn.execute("SELECT workers FROM settings LIMIT 1")
+        except sqlite3.OperationalError:
+            self._conn.execute(
+                "ALTER TABLE settings ADD COLUMN workers INTEGER NOT NULL DEFAULT 1"
+            )
         self._conn.commit()
 
     # ── Settings ──────────────────────────────────────────────
@@ -126,15 +135,18 @@ class SessionStore:
             "face_weight": row["face_weight"],
             "clip_weight": row["clip_weight"],
             "min_face_score": row["min_face_score"],
+            "workers": row["workers"],
         }
 
     def save_settings(self, settings: dict[str, object]) -> None:
         """Upsert user settings (always id=1)."""
         self._conn.execute(
             """INSERT INTO settings (id, original_path, input_path, top_k,
-                                     face_weight, clip_weight, min_face_score, updated_at)
+                                     face_weight, clip_weight, min_face_score,
+                                     workers, updated_at)
                VALUES (1, :original_path, :input_path, :top_k,
-                        :face_weight, :clip_weight, :min_face_score, datetime('now'))
+                        :face_weight, :clip_weight, :min_face_score,
+                        :workers, datetime('now'))
                ON CONFLICT(id) DO UPDATE SET
                    original_path  = excluded.original_path,
                    input_path     = excluded.input_path,
@@ -142,6 +154,7 @@ class SessionStore:
                    face_weight    = excluded.face_weight,
                    clip_weight    = excluded.clip_weight,
                    min_face_score = excluded.min_face_score,
+                   workers        = excluded.workers,
                    updated_at     = excluded.updated_at
             """,
             settings,

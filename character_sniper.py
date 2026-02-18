@@ -20,9 +20,12 @@ from __future__ import annotations
 
 import argparse
 import csv
+import multiprocessing as mp
+import os
 import shutil
 import sys
 import time
+from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Optional
@@ -426,6 +429,292 @@ def process_folder(
 
 
 # ---------------------------------------------------------------------------
+# Parallel processing
+# ---------------------------------------------------------------------------
+
+
+def get_default_workers() -> int:
+    """Return sensible default worker count based on hardware."""
+    device = get_torch_device()
+    cpu_count = os.cpu_count() or 1
+
+    if device in ("cuda", "mps"):
+        # GPU: default to 1 worker to avoid VRAM contention
+        # User can override with --workers if they have enough VRAM
+        return 1
+    else:
+        # CPU: use half of cores (each worker uses multiple intra-op threads)
+        return max(1, cpu_count // 2)
+
+
+def _limit_threads_for_worker(total_workers: int) -> None:
+    """Limit intra-op threads to avoid CPU contention in multi-worker setup."""
+    cpu_count = os.cpu_count() or 1
+    threads_per_worker = max(1, cpu_count // total_workers)
+
+    # Limit ONNX Runtime threads
+    os.environ["OMP_NUM_THREADS"] = str(threads_per_worker)
+    os.environ["MKL_NUM_THREADS"] = str(threads_per_worker)
+
+    # Limit PyTorch threads
+    torch.set_num_threads(threads_per_worker)
+
+
+def _worker_init(total_workers: int) -> None:
+    """Initialize worker process: limit threads."""
+    _limit_threads_for_worker(total_workers)
+
+
+def _worker_process_batch(
+    folder_data: list[tuple[Path, str, list[Path]]],
+    original_path: Path,
+    face_weight: float,
+    clip_weight: float,
+    clip_mode: str,
+    clip_model: str,
+    clip_pretrained: str,
+    crop_expand: float,
+    min_face_score: float,
+    min_similarity: float,
+    top_k: int,
+    total_workers: int,
+    progress_queue: Optional[mp.Queue],
+) -> list[ImageScore]:
+    """
+    Worker function: process a batch of folders.
+
+    Each worker initializes its own models (can't pickle ONNX/PyTorch).
+    Returns combined results from all folders in the batch.
+    """
+    # Limit threads for this worker
+    _limit_threads_for_worker(total_workers)
+
+    # Initialize models in this worker process
+    face_analyzer = FaceAnalyzer()
+    clip_encoder = (
+        CLIPEncoder(clip_model, clip_pretrained) if clip_weight > 0 else DummyCLIP()
+    )
+
+    # Prepare original embeddings
+    orig_face_emb, orig_clip_emb = prepare_original(
+        original_path,
+        face_analyzer,
+        clip_encoder,
+        clip_mode=clip_mode,
+        crop_expand=crop_expand,
+    )
+
+    all_results: list[ImageScore] = []
+
+    for folder_path, folder_name, image_paths in folder_data:
+        # Progress callback that sends to queue
+        def on_progress(current: int, total: int, filename: str):
+            if progress_queue:
+                progress_queue.put(("progress", folder_name, current, total, filename))
+
+        results = process_folder(
+            image_paths=image_paths,
+            folder_name=folder_name,
+            face_analyzer=face_analyzer,
+            clip_encoder=clip_encoder,
+            orig_face_emb=orig_face_emb,
+            orig_clip_emb=orig_clip_emb,
+            face_weight=face_weight,
+            clip_weight=clip_weight,
+            clip_mode=clip_mode,
+            crop_expand=crop_expand,
+            min_face_score=min_face_score,
+            min_similarity=min_similarity,
+            top_k=top_k,
+            on_progress=on_progress,
+        )
+        all_results.extend(results)
+
+        # Signal folder completion
+        if progress_queue:
+            n_sel = sum(1 for r in results if r.selected)
+            n_rej = sum(1 for r in results if r.reject_reason)
+            progress_queue.put(
+                ("folder_done", folder_name, len(image_paths), n_sel, n_rej)
+            )
+
+    return all_results
+
+
+def process_folders_parallel(
+    folders: list[Path],
+    image_lists: list[list[Path]],
+    folder_names: list[str],
+    original_path: Path,
+    *,
+    face_weight: float = 0.7,
+    clip_weight: float = 0.3,
+    clip_mode: str = "crop",
+    clip_model: str = "ViT-B-32",
+    clip_pretrained: str = "laion2b_s34b_b79k",
+    crop_expand: float = 1.5,
+    min_face_score: float = 0.5,
+    min_similarity: float = 0.0,
+    top_k: int = 5,
+    workers: int = 1,
+    on_progress: Optional[ProgressCallback] = None,
+    on_folder_done: Optional[Callable[[str, int, int, int], None]] = None,
+) -> list[ImageScore]:
+    """
+    Process multiple folders in parallel using multiple worker processes.
+
+    Each worker gets its own copy of the models and processes a batch of folders.
+    Progress is reported via callbacks.
+
+    Args:
+        folders: List of folder paths
+        image_lists: List of image path lists (one per folder)
+        folder_names: List of folder display names
+        original_path: Path to reference image
+        workers: Number of parallel workers (default: 1)
+        on_progress: Callback(current, total, filename) for per-image progress
+        on_folder_done: Callback(folder_name, n_images, n_selected, n_rejected)
+        ... other scoring parameters
+
+    Returns:
+        Combined list of ImageScore results from all folders
+    """
+    if workers <= 1:
+        # Single worker: process sequentially (no subprocess overhead)
+        face_analyzer = FaceAnalyzer()
+        clip_encoder = (
+            CLIPEncoder(clip_model, clip_pretrained) if clip_weight > 0 else DummyCLIP()
+        )
+        orig_face_emb, orig_clip_emb = prepare_original(
+            original_path,
+            face_analyzer,
+            clip_encoder,
+            clip_mode=clip_mode,
+            crop_expand=crop_expand,
+        )
+
+        all_results: list[ImageScore] = []
+        for folder, images, folder_name in zip(folders, image_lists, folder_names):
+            if not images:
+                continue
+            results = process_folder(
+                image_paths=images,
+                folder_name=folder_name,
+                face_analyzer=face_analyzer,
+                clip_encoder=clip_encoder,
+                orig_face_emb=orig_face_emb,
+                orig_clip_emb=orig_clip_emb,
+                face_weight=face_weight,
+                clip_weight=clip_weight,
+                clip_mode=clip_mode,
+                crop_expand=crop_expand,
+                min_face_score=min_face_score,
+                min_similarity=min_similarity,
+                top_k=top_k,
+                on_progress=on_progress,
+            )
+            all_results.extend(results)
+            if on_folder_done:
+                n_sel = sum(1 for r in results if r.selected)
+                n_rej = sum(1 for r in results if r.reject_reason)
+                on_folder_done(folder_name, len(images), n_sel, n_rej)
+        return all_results
+
+    # Multi-worker: use ProcessPoolExecutor
+    # Prepare folder batches for workers
+    folder_data = [
+        (folder, name, images)
+        for folder, name, images in zip(folders, folder_names, image_lists)
+        if images  # Skip empty folders
+    ]
+
+    if not folder_data:
+        return []
+
+    # Distribute folders evenly across workers
+    n_folders = len(folder_data)
+    actual_workers = min(workers, n_folders)
+    batch_size = (n_folders + actual_workers - 1) // actual_workers
+
+    batches = []
+    for i in range(0, n_folders, batch_size):
+        batches.append(folder_data[i : i + batch_size])
+
+    # Create progress queue for cross-process communication
+    ctx = mp.get_context("spawn")  # spawn is safer for CUDA/MPS
+    progress_queue: mp.Queue = ctx.Queue()
+
+    all_results: list[ImageScore] = []
+
+    # Submit work to process pool
+    with ProcessPoolExecutor(
+        max_workers=actual_workers,
+        mp_context=ctx,
+    ) as executor:
+        futures = []
+        for batch in batches:
+            future = executor.submit(
+                _worker_process_batch,
+                batch,
+                original_path,
+                face_weight,
+                clip_weight,
+                clip_mode,
+                clip_model,
+                clip_pretrained,
+                crop_expand,
+                min_face_score,
+                min_similarity,
+                top_k,
+                actual_workers,
+                progress_queue,
+            )
+            futures.append(future)
+
+        # Process progress updates while waiting for results
+        completed = 0
+        while completed < len(futures):
+            # Check for progress messages (non-blocking with timeout)
+            try:
+                while True:
+                    msg = progress_queue.get(timeout=0.05)
+                    if msg[0] == "progress":
+                        _, folder_name, current, total, filename = msg
+                        if on_progress:
+                            on_progress(current, total, filename)
+                    elif msg[0] == "folder_done":
+                        _, folder_name, n_images, n_sel, n_rej = msg
+                        if on_folder_done:
+                            on_folder_done(folder_name, n_images, n_sel, n_rej)
+            except Exception:
+                pass  # Queue empty or timeout
+
+            # Check for completed futures
+            for future in futures:
+                if future.done() and not hasattr(future, "_processed"):
+                    future._processed = True  # type: ignore
+                    completed += 1
+                    try:
+                        results = future.result()
+                        all_results.extend(results)
+                    except Exception as e:
+                        print(f"Worker error: {e}", file=sys.stderr)
+
+        # Drain remaining progress messages
+        try:
+            while True:
+                msg = progress_queue.get_nowait()
+                if msg[0] == "progress" and on_progress:
+                    on_progress(msg[2], msg[3], msg[4])
+                elif msg[0] == "folder_done" and on_folder_done:
+                    on_folder_done(msg[1], msg[2], msg[3], msg[4])
+        except Exception:
+            pass
+
+    return all_results
+
+
+# ---------------------------------------------------------------------------
 # CSV report
 # ---------------------------------------------------------------------------
 
@@ -542,6 +831,13 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--report", action="store_true", help="Write CSV report")
     p.add_argument("--clip-model", type=str, default="ViT-B-32")
     p.add_argument("--clip-pretrained", type=str, default="laion2b_s34b_b79k")
+    p.add_argument(
+        "--workers",
+        type=int,
+        default=0,
+        help="Number of parallel workers (0=auto, 1=sequential). "
+        "Auto uses 1 for GPU, cpu_count/2 for CPU.",
+    )
     return p.parse_args()
 
 
@@ -564,6 +860,9 @@ def main():
 
     face_w, clip_w = normalise_weights(args.method, args.face_weight, args.clip_weight)
 
+    # Determine worker count
+    workers = args.workers if args.workers > 0 else get_default_workers()
+
     print("=" * 60)
     print("  Character Sniper")
     print("=" * 60)
@@ -575,90 +874,155 @@ def main():
     print(f"  CLIP mode : {args.clip_mode} (expand={args.crop_expand}x)")
     print(f"  Min det   : {args.min_face_score}")
     print(f"  Min sim   : {args.min_similarity}")
+    print(f"  Workers   : {workers}")
     print(f"  Report    : {args.report}")
     print("=" * 60)
 
     t0 = time.time()
-    print("\nLoading models ...")
 
-    face_analyzer = FaceAnalyzer()
-    clip_encoder = (
-        CLIPEncoder(args.clip_model, args.clip_pretrained)
-        if clip_w > 0
-        else DummyCLIP()
-    )
-
-    print(f"Models loaded in {time.time() - t0:.1f}s\n")
-
-    # prepare original embeddings
-    orig_face_emb, orig_clip_emb = prepare_original(
-        original_path,
-        face_analyzer,
-        clip_encoder,
-        clip_mode=args.clip_mode,
-        crop_expand=args.crop_expand,
-    )
-
-    # discover folders
+    # Discover folders first
     recursive, subfolders = discover_folders(input_dir)
     print(
-        f"Mode: {'recursive' if recursive else 'flat'} ({len(subfolders)} folder(s))\n"
+        f"\nMode: {'recursive' if recursive else 'flat'} ({len(subfolders)} folder(s))"
     )
 
-    # process
-    all_results: list[ImageScore] = []
-    total_selected = 0
-    total_rejected = 0
-    total_processed = 0
+    # Build folder data
+    folders = []
+    folder_names = []
+    image_lists = []
+    total_images = 0
 
     for folder in subfolders:
         images = list_images(folder)
         if not images:
             continue
+        folders.append(folder)
+        folder_names.append(folder.name if recursive else ".")
+        image_lists.append(images)
+        total_images += len(images)
 
-        folder_name = folder.name if recursive else "."
+    if not folders:
+        sys.exit("No images found in input folder.")
 
-        # CLI progress via tqdm
-        pbar = tqdm(
-            total=len(images), desc=f"  [{folder_name}]", unit="img", leave=False
-        )
+    print(f"Found {total_images} images in {len(folders)} folder(s)\n")
 
-        def cli_progress(current, total, filename, _pbar=pbar):
-            _pbar.update(1)
+    # Progress tracking for CLI
+    if workers == 1:
+        # Sequential mode: use tqdm per-folder
+        current_pbar: Optional[tqdm] = None
+        current_folder = {"name": ""}
 
-        results = process_folder(
-            image_paths=images,
-            folder_name=folder_name,
-            face_analyzer=face_analyzer,
-            clip_encoder=clip_encoder,
-            orig_face_emb=orig_face_emb,
-            orig_clip_emb=orig_clip_emb,
+        def cli_progress(current: int, total: int, filename: str):
+            nonlocal current_pbar
+            if current_pbar:
+                current_pbar.update(1)
+
+        def cli_folder_done(folder_name: str, n_images: int, n_sel: int, n_rej: int):
+            nonlocal current_pbar
+            if current_pbar:
+                current_pbar.close()
+                current_pbar = None
+
+        # Wrap process_folders_parallel with per-folder pbar creation
+        total_selected = 0
+        total_rejected = 0
+        all_results: list[ImageScore] = []
+
+        print("Loading models ...")
+
+        for folder, folder_name, images in zip(folders, folder_names, image_lists):
+            current_folder["name"] = folder_name
+            current_pbar = tqdm(
+                total=len(images), desc=f"  [{folder_name}]", unit="img", leave=False
+            )
+
+            results = process_folders_parallel(
+                folders=[folder],
+                image_lists=[images],
+                folder_names=[folder_name],
+                original_path=original_path,
+                face_weight=face_w,
+                clip_weight=clip_w,
+                clip_mode=args.clip_mode,
+                clip_model=args.clip_model,
+                clip_pretrained=args.clip_pretrained,
+                crop_expand=args.crop_expand,
+                min_face_score=args.min_face_score,
+                min_similarity=args.min_similarity,
+                top_k=args.top_k,
+                workers=1,
+                on_progress=cli_progress,
+            )
+
+            if current_pbar:
+                current_pbar.close()
+
+            all_results.extend(results)
+            n_sel = sum(1 for r in results if r.selected)
+            n_rej = sum(1 for r in results if r.reject_reason)
+            total_selected += n_sel
+            total_rejected += n_rej
+
+            top = [r for r in results if r.selected]
+            top.sort(key=lambda r: r.final_score or 0, reverse=True)
+            if top:
+                tqdm.write(
+                    f"  [{folder_name}] {len(images)} imgs -> "
+                    f"{n_sel} selected (best={top[0].final_score}, "
+                    f"worst={top[-1].final_score}), {n_rej} rejected"
+                )
+    else:
+        # Parallel mode: overall progress bar
+        print(f"Loading models in {workers} worker(s) ...")
+
+        pbar = tqdm(total=total_images, desc="  Processing", unit="img")
+        total_selected = 0
+        total_rejected = 0
+        folder_stats: dict[str, tuple[int, int, int]] = {}
+
+        def cli_progress(current: int, total: int, filename: str):
+            pbar.update(1)
+
+        def cli_folder_done(folder_name: str, n_images: int, n_sel: int, n_rej: int):
+            nonlocal total_selected, total_rejected
+            total_selected += n_sel
+            total_rejected += n_rej
+            folder_stats[folder_name] = (n_images, n_sel, n_rej)
+
+        all_results = process_folders_parallel(
+            folders=folders,
+            image_lists=image_lists,
+            folder_names=folder_names,
+            original_path=original_path,
             face_weight=face_w,
             clip_weight=clip_w,
             clip_mode=args.clip_mode,
+            clip_model=args.clip_model,
+            clip_pretrained=args.clip_pretrained,
             crop_expand=args.crop_expand,
             min_face_score=args.min_face_score,
             min_similarity=args.min_similarity,
             top_k=args.top_k,
+            workers=workers,
             on_progress=cli_progress,
+            on_folder_done=cli_folder_done,
         )
+
         pbar.close()
-        all_results.extend(results)
 
-        n_sel = sum(1 for r in results if r.selected)
-        n_rej = sum(1 for r in results if r.reject_reason)
-        total_selected += n_sel
-        total_rejected += n_rej
-        total_processed += len(images)
-
-        top = [r for r in results if r.selected]
-        top.sort(key=lambda r: r.final_score or 0, reverse=True)
-        if top:
-            tqdm.write(
-                f"  [{folder_name}] {len(images)} imgs -> "
-                f"{n_sel} selected (best={top[0].final_score}, "
-                f"worst={top[-1].final_score}), {n_rej} rejected"
-            )
+        # Print folder summaries
+        for folder_name in folder_names:
+            if folder_name in folder_stats:
+                n_images, n_sel, n_rej = folder_stats[folder_name]
+                folder_results = [r for r in all_results if r.folder == folder_name]
+                top = [r for r in folder_results if r.selected]
+                top.sort(key=lambda r: r.final_score or 0, reverse=True)
+                if top:
+                    tqdm.write(
+                        f"  [{folder_name}] {n_images} imgs -> "
+                        f"{n_sel} selected (best={top[0].final_score}, "
+                        f"worst={top[-1].final_score}), {n_rej} rejected"
+                    )
 
     # copy & report
     print()
@@ -668,7 +1032,7 @@ def main():
 
     print(f"\n{'=' * 60}")
     print(
-        f"  Done!  {total_processed} processed, {total_selected} selected, "
+        f"  Done!  {total_images} processed, {total_selected} selected, "
         f"{total_rejected} rejected  ({time.time() - t0:.1f}s)"
     )
     print(f"{'=' * 60}")
